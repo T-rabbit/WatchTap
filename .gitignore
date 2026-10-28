@@ -5,3 +5,6 @@ local.properties
 .idea/
 *.jks
 *.keystore
+WatchTap-v1.0.0.apk
+watchtap.jks
+RELEASE_NOTES.md
