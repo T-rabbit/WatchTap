@@ -10,9 +10,38 @@
 
 | 功能 | 说明 |
 |---|---|
+| **实时监控** | 心率 / 手表睡眠模式 / 勿扰状态 / 生理睡眠，每秒刷新 |
+| **自动联动** | 手表进入睡眠模式 → 手机自动开启勿扰（仅放行闹钟） |
+| **手动控制** | UI 上一键切换勿扰 |
 | **消息抓包** | 双向记录所有手表消息（sid / cid / 长度 / payload hex） |
-| **睡眠联动** | 手表进入睡眠模式 → 手机自动开启免打扰 |
-| **信封改写** | 可修改发送给手表的能力清单（含一个已实现的示例） |
+
+### 界面
+
+```
+┌──────────────────────────────────┐
+│ WatchTap                          │
+│ 手表状态监控 · 每秒刷新            │
+├──────────────────────────────────┤
+│ 心率                              │
+│  72 bpm         刚刚 · 12:01:33   │
+├──────────────────────────────────┤
+│ 手表睡眠模式                       │
+│  已开启         2 秒前 · 12:01:35  │
+├──────────────────────────────────┤
+│ 手机勿扰模式                       │
+│  仅闹钟         2 秒前 · 12:01:35  │
+│                 闹钟仍会响         │
+├──────────────────────────────────┤
+│ 生理睡眠检测                       │
+│  睡眠中         1 分钟前           │
+├──────────────────────────────────┤
+│      [ 切换勿扰 ]                  │
+├──────────────────────────────────┤
+│ 勿扰权限：已授权                   │
+│ 累计：心率 128 · 生理 3 · 睡眠模式 2│
+│ 最近消息：sid=5 cid=0xcc len=6    │
+└──────────────────────────────────┘
+```
 
 ---
 
@@ -62,110 +91,96 @@ adb logcat -s WatchTap
 
 ---
 
-## 二、睡眠联动
+## 二、睡眠联动与勿扰控制
 
-### 为什么需要它
+### 设计决策：模块自己控制勿扰
 
-ColorOS 上，OPPO 健康能把手表的睡眠模式映射到手机免打扰。这套逻辑在 HyperOS 上完全失效，原因有三层：
-
-| 依赖 | ColorOS | HyperOS |
-|---|---|---|
-| `SystemUtils.getRomVersionCode()` | 反射 `OplusBuild` 拿到版本号 | 两个私有类都不存在 → 返回 0 |
-| `Settings.Global."zen_mode_ext_info"` | 非空 | `null` |
-| `OplusNotificationManager` | 存在 | 类不存在 |
-
-这三个缺失导致：
+**没有**沿用 hook OPPO 健康 ColorOS 私有写入路径的做法。原因：
 
 ```
-getRomVersionCode() = 0
-  → isPhoneSupportZenModeLinkage() = false
-  → 设置里不显示「睡眠模式联动免打扰」开关
-  → 用户无法开启，联动永久不可用
+App 的 changePhoneDND()
+  └─ if (isFromColorOS15())
+       ├─ true  → OPlusNotificationUtils.setZenMode()
+       │           └─ new android.app.OplusNotificationManager()  ← 类不存在
+       └─ false → NotificationManagerNative.setZenMode()
+                   └─ Epona 反射系统私有接口  ← HyperOS 上失败
 ```
 
-即使强行打开开关，还有第二道闸门：
+实测在 HyperOS 上，`isFromColorOS15()` 返回 false，走后者，异常被 App 自己
+catch 掉，日志只有 `Change phone zenMode error=`，`zen_mode` 始终不变。
 
-```
-isPhoneSupportDND() = (zen_mode_ext_info != null) = false
-  → SleepModeManager 跳过 linkagePhoneZenMode()
-```
-
-### 三个 hook，缺一不可
-
-#### 1. 让联动开关出现
+**所以改为模块直接调标准 Android API**：
 
 ```java
-SystemUtils.getRomVersionCode() → 15
+NotificationManager.setInterruptionFilter(INTERRUPTION_FILTER_ALARMS)
 ```
 
-`isPhoneSupportZenModeLinkage()` 的条件是 `SDK_INT >= 30 && getRomVersionCode() > 0`。
-伪造非 0 后，设置页就会显示那个开关。
+### 为什么用 ALARMS 而不是 NONE
 
-> ⚠️ **但用户仍需手动打开它**。因为总开关是 `SleepModelSettings.mStateSync`，
-> 存在 `UserPreference{SLEEP_MODEL_SETTINGS}` 里，默认值 0。
+| 过滤器 | 值 | zen_mode | 效果 |
+|---|---|---|---|
+| `INTERRUPTION_FILTER_ALL` | 1 | 0 | 关闭 |
+| `INTERRUPTION_FILTER_PRIORITY` | 2 | 1 | 仅优先联系人 |
+| `INTERRUPTION_FILTER_NONE` | 4 | 2 | **完全静音，闹钟也不响** |
+| `INTERRUPTION_FILTER_ALARMS` | 5 | 3 | **仅闹钟，其余静音** ← 用这个 |
 
-#### 2. 让 DND 能力检测通过
+v1.0.0 用的是 `NONE`，会把手表闹钟一起静音。现改为 `ALARMS`，保留闹钟。
 
-```java
-Settings.Global.getString(cr, "zen_mode_ext_info")  // 为 null 时返回合成值
-→ "时间戳ms,allowCalls,allowMsgs,allowEvents,status"
+### 跨进程架构
+
+```
+┌─────────────────────────────┐
+│ com.heytap.health（hook 进程）│
+│  ├ 采集心率/睡眠/睡眠模式      │
+│  └ State.push() ─────────┐   │
+└──────────────────────────┼───┘
+                           │ ContentResolver.call()
+                           ▼
+┌─────────────────────────────┐
+│ dev.watchtap（本模块进程）    │
+│  ├ StateStore  存状态        │
+│  ├ Dnd         写勿扰 ←有权限 │
+│  └ MainActivity 读状态显示   │
+└─────────────────────────────┘
 ```
 
-`isPhoneSupportDND()` 只判断这个字段是否非空。伪造后返回 true，联动才会继续往下走。
+**关键点：勿扰写入必须在模块自己的进程执行。**
 
-`status` 取真实的 `zen_mode` 值，保证读写一致。
+hook 进程的身份是 `com.heytap.health`，它没有 `ACCESS_NOTIFICATION_POLICY`
+权限；而模块进程有。所以 `State.autoDnd()` 不直接写，而是通过
+`StateStore.METHOD_TOGGLE_DND` 请求 provider 代写。
 
-#### 3. 拦截 ColorOS 私有写入
+### 权限
 
-一旦前两个生效，App 会走 ColorOS 分支，然后：
+必须授予勿扰权限，否则 `setInterruptionFilter` 抛 `SecurityException`：
 
-```java
-// OPlusNotificationUtils.setZenMode
-new android.app.OplusNotificationManager()   // ← 类不存在，崩溃
+```bash
+adb shell cmd notification allow_dnd dev.watchtap
 ```
 
-所以必须提前拦截这两个入口，改走标准 Android API：
+或：设置 → 通知 → 勿扰权限访问 → 勾选 WatchTap
 
-```java
-// OPlusNotificationUtils.setZenMode(int, String)
-// NotificationManagerNative.setZenMode(Context, int, Uri, String)
-→ NotificationManager.setInterruptionFilter(INTERRUPTION_FILTER_NONE / ALL)
-```
+UI 首屏会显示红色提示条，点它直接跳到授权页。
 
 ### 完整链路
 
 ```
 手表进入睡眠模式
   ↓
-onReceiveDeviceSleepModeData  startNow=true, isSyncSleepMode=true ✓
+SleepModeManager.onReceiveDeviceSleepModeData  startNow=true
   ↓
-isPhoneSupportDND = true                              ← hook 2
+State.setSleepMode(1, ts, fromPush=true)
   ↓
-linkagePhoneZenMode(enable=true)
-  ↓
-changePhoneDND(true)
-  ↓
-NotificationManager.setInterruptionFilter(NONE)       ← hook 3
-  ↓
-zen_mode: 0 → 2                                       ✓ 免打扰已开启
+State.autoDnd(true) ─── ContentResolver.call ──→ StateStore
+                                                    ↓
+                                              Dnd.set(ctx, true)
+                                                    ↓
+                                     setInterruptionFilter(FILTER_ALARMS)
+                                                    ↓
+                                              zen_mode = 3
 ```
 
-### 实测验证
-
-```
-基线 zen_mode = 0
-手表进入睡眠模式后 zen_mode = 2
-```
-
-日志证据：
-
-```
-CHAIN onReceiveDeviceSleepModeData startNow=true isSyncSleepMode=true ts=1793207121
-GATE isPhoneSupportDND = true
-GATE linkagePhoneZenMode called: enable=true time=1793207121
-```
-
----
+不依赖 OPPO 健康的任何 ColorOS 代码路径。
 
 ## 三、逆向过程（重要结论）
 
@@ -367,37 +382,76 @@ adb shell settings get global zen_mode   # 0=关, 2=免打扰
 
 ---
 
-## 七、分步启用（排查用）
+## 七、排查
 
-`Main.java` 里有 `STEP` 常量：
+### 确认 hook 装上
 
-```java
-private static final int STEP = 2;
+LSPosed 自带调试 CLI：
+
+```bash
+adb shell su -c "lspctl hook-debug enable"
+# 重启目标应用后
+adb shell su -c "lspctl hook-debug dump"
 ```
 
-| STEP | 启用的 hook |
+输出里每个 hook 会显示：
+
+```
+void com.heytap.health.devicemanager.btclient.BTClient.onMessageReceived(...)
+  hooked=0xd3e65ef0 backup=0x700f4ef020
+  expectedEntryPoint=0xd08850f0 realEntryPoint=0xd08850f0 eq=true
+```
+
+`eq=true` 才算真正生效。
+
+### 看实时日志
+
+```bash
+adb logcat -s WatchTap
+```
+
+关注这些前缀：
+
+| 前缀 | 含义 |
 |---|---|
-| 0 | 只抓包，不做任何伪装 |
-| 1 | + `getRomVersionCode` → 15（让开关出现） |
-| 2 | + `zen_mode_ext_info` 伪造 + DND 写入拦截（完整联动） |
+| `hooked ...` | hook 安装成功 |
+| `SLEEPMODE` | 睡眠模式变化 |
+| `SLEEPSTATE` | 生理睡眠变化 |
+| `AUTO: dnd` | 自动联动执行结果 |
+| `STATE:` | 状态过滤（忽略过期值） |
 
-排查时建议从 0 开始，每次 +1，并**连续启动 3 次**确认不崩溃。
+### 状态不更新
 
-> 经验：单次启动成功不代表稳定。早期版本曾因
-> `OPlusDeviceUtils.isFromColorOS14()` 里的 `sget` 无 try/catch 而导致
-> 启动即崩，单次测试没能发现。
-
----
+1. 检查 UI 上「模块最后更新」时间——如果很久没变，说明 hook 进程没数据
+2. `lspctl hook-debug dump` 确认 hook 状态
+3. 确认作用域包含 `com.heytap.health`
 
 ## 八、已知限制
 
-1. **手表不发状态变更事件** —— 从手表侧切换睡眠模式时，手机收不到通知。联动依赖 App 主动读取（连接建立 / 设置变更时触发）。
+1. **手表不发状态变更事件**
 
-2. **`android.app.OplusNotificationManager` 无法伪造** —— 它位于 `android.app` 包，被 boot classloader 优先解析，往应用 ClassLoader 注入同名类无效。只能靠 hook 上层方法绕开。
+   实测：清空日志 → 手表切换睡眠模式 → 35 秒内收到 4 条消息（全是 `sid=2` 设备心跳），发送 0 条。
 
-3. **状态可能滞后** —— App 重启后读到的是数据库中的历史值，直到下次与手表通信才会刷新。
+   手表固件不会主动通知手机。手机只在两个时机能读到状态：
+   - 与手表建立连接后
+   - App 内部设置项变化时
+
+   因此从手表切换睡眠模式时，模块可能收不到事件，联动不会立即触发。
+   **这是手表行为，模块无法改变。**
+
+2. **勿扰权限需手动授予**
+
+   `ACCESS_NOTIFICATION_POLICY` 是特殊权限，无法通过安装自动获得。
+   未授权时 UI 顶部会显示红色提示条。
+
+3. **UI 数据依赖 hook 进程存活**
+
+   OPPO 健康被系统杀掉后，状态停止更新。UI 上「模块最后更新」会显示时间差。
 
 4. **仅测试于 OPPO Watch X2 + HyperOS 4.0（Android 17）+ LSPosed 2.2.1**。
+
+5. **心率解析基于实测包结构**，不同固件版本可能不同。若心率一直显示 `--`，
+   用抓包功能看 `sid` 与 `len`，再对照 `Main.parseHeartRate()` 调整。
 
 ---
 
@@ -406,22 +460,22 @@ private static final int STEP = 2;
 ```
 watchtap/
 ├── app/src/main/
-│   ├── AndroidManifest.xml
+│   ├── AndroidManifest.xml          Activity + Provider + 勿扰权限
 │   ├── java/dev/watchtap/
-│   │   ├── Main.java            入口 + 消息抓包
-│   │   ├── LinkageHook.java     联动启用（版本号 / zen_mode_ext_info / 诊断）
-│   │   └── DndInterceptor.java  DND 写入拦截
+│   │   ├── Main.java                Xposed 入口：4 个采集 hook
+│   │   ├── State.java               hook 侧状态缓存 + 上报 + 自动联动
+│   │   ├── StateStore.java          ContentProvider，跨进程通道
+│   │   ├── Dnd.java                 勿扰读写（模块自己控制）
+│   │   └── MainActivity.java        UI：4 卡片 + 每秒刷新
 │   ├── res/values/strings.xml
 │   └── resources/META-INF/xposed/
-│       ├── java_init.list       入口类声明
-│       ├── module.prop          minApiVersion=102
-│       └── scope.list           com.heytap.health
-├── build_apk.sh                 命令行构建脚本
+│       ├── java_init.list           入口类声明
+│       ├── module.prop              minApiVersion=102
+│       └── scope.list               com.heytap.health
+├── build_apk.sh                     命令行构建脚本
 ├── build.gradle / settings.gradle
 └── README.md
 ```
-
----
 
 ## 十、免责声明
 

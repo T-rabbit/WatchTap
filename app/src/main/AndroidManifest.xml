@@ -2,8 +2,29 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="dev.watchtap">
 
+    <!-- 勿扰权限：用于模块自己切换勿扰模式 -->
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+
     <application
         android:allowBackup="false"
+        android:icon="@android:drawable/ic_menu_recent_history"
         android:label="WatchTap"
-        android:supportsRtl="true" />
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.Material.NoActionBar">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="WatchTap">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <provider
+            android:name=".StateStore"
+            android:authorities="dev.watchtap.state"
+            android:exported="true" />
+    </application>
 </manifest>

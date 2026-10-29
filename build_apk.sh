@@ -39,7 +39,7 @@ echo "==> 1/7 生成 R.java + 编译资源 (aapt2)"
   --java "$OUT/gen" \
   --min-sdk-version "$MIN_SDK" \
   --target-sdk-version "$TARGET_SDK" \
-  --version-code 1 --version-name "1.0.0" \
+  --version-code 2 --version-name "2.0.0" \
   "$OUT/res.zip"
 echo "    base.apk 已生成（含 resources.arsc）"
 
@@ -71,18 +71,18 @@ echo "==> 6/7 zipalign"
 "$BT/zipalign" -f -p 4 "$OUT/unsigned.apk" "$OUT/aligned.apk"
 
 echo "==> 7/7 签名 (apksigner)"
-KS="$ROOT/keystore.jks"
+KS="$ROOT/watchtap.jks"
 if [ ! -f "$KS" ]; then
   echo "    生成自签名 keystore（仅测试用）"
   "$JDK_BIN/keytool" -genkeypair -v \
-    -keystore "$KS" -storepass zenlink -keypass zenlink \
-    -alias zenlink -keyalg RSA -keysize 2048 -validity 10000 \
-    -dname "CN=ZenLink, OU=Dev, O=ZenLink, L=NA, S=NA, C=CN" >/dev/null 2>&1
+    -keystore "$KS" -storepass watchtap -keypass watchtap \
+    -alias watchtap -keyalg RSA -keysize 2048 -validity 10000 \
+    -dname "CN=WatchTap, OU=Dev, O=WatchTap, L=NA, S=NA, C=CN" >/dev/null 2>&1
 fi
 
 "$BT/apksigner" sign \
-  --ks "$KS" --ks-pass pass:zenlink --key-pass pass:zenlink \
-  --ks-key-alias zenlink \
+  --ks "$KS" --ks-pass pass:watchtap --key-pass pass:watchtap \
+  --ks-key-alias watchtap \
   --min-sdk-version "$MIN_SDK" \
   --v1-signing-enabled true \
   --v2-signing-enabled true \
