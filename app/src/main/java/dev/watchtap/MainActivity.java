@@ -31,7 +31,6 @@ public class MainActivity extends Activity {
     private TextView mDndValue, mDndSub;
     private TextView mSleepValue, mSleepSub;
     private TextView mPermBar;
-    private TextView mHookBar;
     private TextView mDiag;
     private TextView mLogView;
     private TextView mLogToggle;
@@ -73,17 +72,6 @@ public class MainActivity extends Activity {
         subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         subtitle.setTextColor(0xFF8B94A3);
         root.addView(subtitle, lp(pad, 0, pad, dp(10)));
-
-        // hook 连接状态条
-        mHookBar = new TextView(this);
-        mHookBar.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
-        mHookBar.setTextColor(Color.WHITE);
-        mHookBar.setBackgroundColor(0xFFDC2626);
-        int hp = dp(10);
-        mHookBar.setPadding(hp, hp, hp, hp);
-        mHookBar.setText("⚠ 模块未连接 OPPO 健康，请检查 LSPosed 设置");
-        mHookBar.setVisibility(View.GONE);
-        root.addView(mHookBar, lp(pad, 0, pad, dp(8)));
 
         // 权限提示条
         mPermBar = new TextView(this);
@@ -149,22 +137,6 @@ public class MainActivity extends Activity {
         probe.setOnClickListener(v -> runProbe());
         root.addView(probe, lp(pad, dp(4), pad, dp(4)));
 
-        // 数据详情入口（二级页面）
-        Button detail = new Button(this);
-        detail.setText("查看数据详情与历史");
-        detail.setAllCaps(false);
-        detail.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        detail.setTextColor(Color.WHITE);
-        detail.setBackgroundColor(0xFF059669);
-        detail.setMinHeight(0);
-        detail.setMinimumHeight(0);
-        detail.setPadding(dp(8), dp(6), dp(8), dp(6));
-        detail.setOnClickListener(v -> {
-            StateStore.logLocal(this, "打开数据详情页");
-            startActivity(new android.content.Intent(this, DataActivity.class));
-        });
-        root.addView(detail, lp(pad, dp(4), pad, dp(4)));
-
         // 刷新按钮
         Button refresh = new Button(this);
         refresh.setText("刷新状态");
@@ -191,12 +163,12 @@ public class MainActivity extends Activity {
 
         // 日志标题（点击展开/收起）
         mLogToggle = new TextView(this);
-        mLogToggle.setText("▸ 操作日志（点击展开）");
+        mLogToggle.setText("▸ 操作日志");
         mLogToggle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
         mLogToggle.setTextColor(0xFF8B94A3);
-        mLogToggle.setPadding(dp(4), dp(6), dp(4), dp(6));
+        mLogToggle.setPadding(dp(4), dp(8), dp(4), dp(8));
         mLogToggle.setOnClickListener(v -> toggleLog());
-        root.addView(mLogToggle, lp(pad, dp(6), pad, dp(2)));
+        root.addView(mLogToggle, lp(pad, dp(4), pad, 0));
 
         // 日志正文
         mLogView = new TextView(this);
@@ -261,21 +233,6 @@ public class MainActivity extends Activity {
         void on(boolean value);
     }
 
-    /** 展开/收起日志。 */
-    private void toggleLog() {
-        mLogExpanded = !mLogExpanded;
-        mLogView.setVisibility(mLogExpanded ? View.VISIBLE : View.GONE);
-        mLogToggle.setText(mLogExpanded ? "▾ 操作日志（点击收起）" : "▸ 操作日志（点击展开）");
-        if (mLogExpanded) {
-            // 展开时滚到日志区
-            mLogView.post(() -> {
-                if (mLogView.getParent() != null) {
-                    ((View) mLogView.getParent()).requestLayout();
-                }
-            });
-        }
-    }
-
     /** 造一个紧凑的 Switch。 */
     private android.widget.Switch makeSwitch(boolean checked, OnBool cb) {
         android.widget.Switch sw = new android.widget.Switch(this);
@@ -322,6 +279,13 @@ public class MainActivity extends Activity {
         wrap.addView(row, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         return wrap;
+    }
+
+    /** 展开/收起操作日志。默认收起，避免主界面太长。 */
+    private void toggleLog() {
+        mLogExpanded = !mLogExpanded;
+        mLogView.setVisibility(mLogExpanded ? View.VISIBLE : View.GONE);
+        mLogToggle.setText(mLogExpanded ? "▾ 操作日志" : "▸ 操作日志");
     }
 
     private LinearLayout.LayoutParams lp(int l, int t, int r, int btm) {
@@ -442,38 +406,11 @@ public class MainActivity extends Activity {
             mNotifySwitch.setOnCheckedChangeListener((btn, checked) -> saveNotifyPref(checked));
         }
 
-        // ---- hook 连接状态 ----
-        long hbTs = b.getLong(StateStore.K_HB_TS, 0);
-        long hbAgo = hbTs > 0 ? System.currentTimeMillis() - hbTs : -1;
-        boolean hookAlive = hbAgo >= 0 && hbAgo < 30000;   // 30 秒内有心跳
-        if (hookAlive) {
-            mHookBar.setVisibility(View.GONE);
-        } else {
-            mHookBar.setVisibility(View.VISIBLE);
-            if (hbTs <= 0) {
-                mHookBar.setText("⚠ 模块未连接 OPPO 健康\n"
-                        + "请确认：LSPosed 已启用 · 作用域含 com.heytap.health · 已重启手机");
-                mHookBar.setBackgroundColor(0xFFDC2626);
-            } else {
-                mHookBar.setText("⚠ 连接已断 " + (hbAgo / 1000) + " 秒\n"
-                        + "OPPO 健康可能被系统杀掉了，重新打开它");
-                mHookBar.setBackgroundColor(0xFFEA580C);
-            }
-        }
-
         // ---- 权限条 ----
         mPermBar.setVisibility(access ? View.GONE : View.VISIBLE);
 
         // ---- 诊断 ----
         StringBuilder sb = new StringBuilder();
-        sb.append("模块连接：").append(hbTs <= 0 ? "未连接"
-                : (hookAlive ? "正常" : "已断 " + (hbAgo / 1000) + " 秒")).append('\n');
-        String hbInfo = b.getString(StateStore.K_HEARTBEAT, "");
-        if (!hbInfo.isEmpty()) {
-            for (String line : hbInfo.split("\n")) {
-                sb.append("  ").append(line).append('\n');
-            }
-        }
         sb.append("勿扰权限：").append(access ? "已授权" : "未授权")
                 .append(" · ").append(Dnd.diagnose(this)).append('\n');
         sb.append("模块最后更新：").append(updated > 0 ? ago(updated) : "-").append('\n');

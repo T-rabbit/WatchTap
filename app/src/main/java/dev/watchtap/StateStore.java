@@ -34,18 +34,6 @@ public class StateStore extends ContentProvider {
     public static final String METHOD_PROBE_DND = "probeDnd";
     /** 发睡眠模式通知（由模块进程执行，通知归属 dev.watchtap） */
     public static final String METHOD_NOTIFY = "notifySleep";
-    /** 记录一个指标值到历史 */
-    public static final String METHOD_RECORD = "record";
-    /** 自检：导出 App 数据库结构 */
-    public static final String METHOD_DUMP_DB = "dumpDb";
-    /** 用 root 采集一次数据 */
-    public static final String METHOD_COLLECT = "collect";
-    /** 诊断 LSPosed 状态 */
-    public static final String METHOD_LSPOSED = "lsposed";
-    /** 深度探测：数据到底存在哪 */
-    public static final String METHOD_DEEP = "deep";
-    /** 转储 Health Connect 表结构 */
-    public static final String METHOD_HC_DUMP = "hcDump";
 
     // ---- 状态键 ----
     public static final String K_SLEEP_STATE = "sleepState";
@@ -63,16 +51,6 @@ public class StateStore extends ContentProvider {
     public static final String K_UPDATED = "updated";
     public static final String K_COUNTS = "counts";
     public static final String K_LAST_MSG = "lastMsg";
-    /** 标量指标：id 列表（分号分隔） */
-    public static final String K_SCALAR_IDS = "scalarIds";
-    /** 标量指标：对应值（分号分隔） */
-    public static final String K_SCALAR_VALS = "scalarVals";
-    /** hook 进程心跳信息 */
-    public static final String K_HEARTBEAT = "heartbeat";
-    /** hook 进程转储的 App 数据库结构 */
-    public static final String K_DB_SCHEMA = "dbSchema";
-    /** 心跳时间戳 */
-    public static final String K_HB_TS = "hbTs";
 
     static final String PREF = "watchtap_state";
     static final String LOGFILE = "watchtap.log";
@@ -87,65 +65,7 @@ public class StateStore extends ContentProvider {
     public boolean onCreate() {
         sInstance = this;
         Logs.setLocal(true);
-        // 启动时清理过期历史（30 天前）
-        try {
-            History.cleanup(getContext());
-        } catch (Throwable ignored) {
-        }
-        startAutoCollect();
         return true;
-    }
-
-    /**
-     * 定时用 root 采集数据。
-     *
-     * 不依赖 hook：hook 失效时这是唯一的数据来源。
-     * 首次延迟 8 秒（等系统启动完），之后每 5 分钟一次。
-     */
-    private void startAutoCollect() {
-        final android.os.Handler h =
-                new android.os.Handler(android.os.Looper.getMainLooper());
-        h.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    if (Root.available()) {
-                        String r = doCollect();
-                        Logs.fire("自动采集", r.split("\n")[0]);
-                    }
-                } catch (Throwable t) {
-                    Logs.w("自动采集失败", t);
-                }
-                h.postDelayed(this, 5 * 60 * 1000L);
-            }
-        }, 8000L);
-    }
-
-    /**
-     * 采集数据：优先 Health Connect，失败再退回 OPPO 数据库。
-     *
-     * Health Connect 是 Android 官方健康数据中枢，OPPO 健康会往里同步，
-     * 格式标准，比猜 OPPO 的私有结构可靠得多。
-     */
-    String doCollect() {
-        StringBuilder sb = new StringBuilder();
-
-        if (HealthConnect.available()) {
-            sb.append("【数据源：Health Connect】\n");
-            String r = HealthConnect.collect(getContext());
-            sb.append(r).append('\n');
-            // 成功就不要走下面的兜底了
-            if (r.startsWith("写入") && !r.startsWith("写入 0")) {
-                return sb.toString();
-            }
-            sb.append("Health Connect 没读到数据，尝试 OPPO 数据库\n\n");
-        } else {
-            sb.append("Health Connect 不可用（数据库不存在或 root 失效）\n\n");
-        }
-
-        sb.append("【数据源：OPPO 健康数据库】\n");
-        sb.append(DbProbe.collect(getContext()));
-        return sb.toString();
     }
 
     private SharedPreferences pref() {
@@ -196,17 +116,6 @@ public class StateStore extends ContentProvider {
             if (extras.containsKey(K_LAST_MSG)) {
                 e.putString(K_LAST_MSG, safe(extras.getString(K_LAST_MSG)));
             }
-            if (extras.containsKey(K_HEARTBEAT)) {
-                e.putString(K_HEARTBEAT, safe(extras.getString(K_HEARTBEAT)));
-            }
-            if (extras.containsKey(K_DB_SCHEMA)) {
-                e.putString(K_DB_SCHEMA, safe(extras.getString(K_DB_SCHEMA)));
-            }
-            putLongIfPresent(extras, e, K_HB_TS);
-            if (extras.containsKey(K_SCALAR_IDS)) {
-                e.putString(K_SCALAR_IDS, safe(extras.getString(K_SCALAR_IDS)));
-                e.putString(K_SCALAR_VALS, safe(extras.getString(K_SCALAR_VALS)));
-            }
             e.apply();
             return Bundle.EMPTY;
         }
@@ -235,83 +144,9 @@ public class StateStore extends ContentProvider {
             b.putLong(K_UPDATED, p.getLong(K_UPDATED, 0));
             b.putString(K_COUNTS, p.getString(K_COUNTS, ""));
             b.putString(K_LAST_MSG, p.getString(K_LAST_MSG, ""));
-            b.putString(K_SCALAR_IDS, p.getString(K_SCALAR_IDS, ""));
-            b.putString(K_HEARTBEAT, p.getString(K_HEARTBEAT, ""));
-            b.putString(K_DB_SCHEMA, p.getString(K_DB_SCHEMA, ""));
-            b.putLong(K_HB_TS, p.getLong(K_HB_TS, 0));
-            b.putString(K_SCALAR_VALS, p.getString(K_SCALAR_VALS, ""));
             b.putString("logs", recentLogs());
             b.putBoolean("dndAccess", Dnd.hasAccess(getContext()));
             return b;
-        }
-
-        if (METHOD_COLLECT.equals(method)) {
-            Bundle r = new Bundle();
-            r.putString("report", doCollect());
-            return r;
-        }
-
-        if (METHOD_HC_DUMP.equals(method)) {
-            Bundle r = new Bundle();
-            r.putString("report", HealthConnect.dumpSchema(getContext()));
-            return r;
-        }
-
-        if (METHOD_DEEP.equals(method)) {
-            Bundle r = new Bundle();
-            r.putString("report", DeepProbe.probe(getContext()));
-            return r;
-        }
-
-        if (METHOD_LSPOSED.equals(method)) {
-            Bundle r = new Bundle();
-            r.putString("report", Root.diagnoseLsposed());
-            return r;
-        }
-
-        if (METHOD_DUMP_DB.equals(method)) {
-            Bundle r = new Bundle();
-            StringBuilder sb = new StringBuilder();
-
-            sb.append("=== 模块连接状态 ===\n");
-            sb.append("本进程包名：").append(getContext().getPackageName()).append('\n');
-            long hbTs = p.getLong(K_HB_TS, 0);
-            String hb = p.getString(K_HEARTBEAT, "");
-            if (hbTs <= 0 || hb.isEmpty()) {
-                sb.append("hook 进程：❌ 未连接（模块可能未生效）\n");
-                sb.append("  请确认：LSPosed 已启用、作用域含 com.heytap.health、已重启\n");
-            } else {
-                long ago = System.currentTimeMillis() - hbTs;
-                sb.append("hook 进程：").append(ago < 30000 ? "✓ 正常" : "⚠ 已停 " + (ago / 1000) + " 秒")
-                        .append('\n');
-                for (String line : hb.split("\n")) {
-                    sb.append("  ").append(line).append('\n');
-                }
-                sb.append("  最后心跳：").append(ago / 1000).append(" 秒前\n");
-            }
-            sb.append('\n');
-
-            sb.append("=== 历史存储自检 ===\n");
-            sb.append(History.selfCheck(getContext()));
-            sb.append('\n');
-
-            sb.append("=== OPPO 健康数据库结构（root 读取）===\n");
-            sb.append(DbProbe.dumpSchema());
-            sb.append('\n');
-            sb.append("=== LSPosed 状态 ===\n");
-            sb.append(Root.diagnoseLsposed());
-            r.putString("report", sb.toString());
-            return r;
-        }
-
-        if (METHOD_RECORD.equals(method) && extras != null) {
-            String id = extras.getString("metric");
-            long value = extras.getLong("value", 0);
-            long ts = extras.getLong("ts", System.currentTimeMillis());
-            if (id != null) {
-                History.append(getContext(), ts, id, value);
-            }
-            return Bundle.EMPTY;
         }
 
         if (METHOD_NOTIFY.equals(method) && extras != null) {

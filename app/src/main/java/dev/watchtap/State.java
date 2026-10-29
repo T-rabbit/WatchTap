@@ -31,10 +31,6 @@ final class State {
 
     static volatile String lastMsg = "";
 
-    /** 各标量指标的最新值（id → value），给 provider 读 */
-    static final java.util.concurrent.ConcurrentHashMap<String, Long> SCALARS =
-            new java.util.concurrent.ConcurrentHashMap<>();
-
     private State() {}
 
     static void attach(Context ctx) {
@@ -61,9 +57,6 @@ final class State {
         sleepTs = toMs(tsSec);
         sleepCount.incrementAndGet();
         Logs.fire("睡眠检测", state == 1 ? "检测到入睡" : "检测到清醒");
-        // 生理睡眠状态映射到分期：睡着记浅睡，清醒记清醒
-        record(Metrics.SLEEP_STAGE,
-                state == 1 ? Metrics.STAGE_LIGHT : Metrics.STAGE_AWAKE);
         push();
     }
 
@@ -106,95 +99,10 @@ final class State {
 
         push();
 
-        record(Metrics.SLEEP_MODE, on);
-
         if (changed) {
             autoDnd(on == 1, mutePref());
             maybeNotify(on == 1);
         }
-    }
-
-    /**
-     * 记录一个指标值：更新内存、写历史、推给 UI。
-     *
-     * @param id  Metrics 里的指标 id
-     */
-    static void record(String id, long value) {
-        SCALARS.put(id, value);
-
-        long now = System.currentTimeMillis();
-        Context c = ctx();
-        if (c != null) {
-            try {
-                Bundle b = new Bundle();
-                b.putString("metric", id);
-                b.putLong("value", value);
-                b.putLong("ts", now);
-                c.getContentResolver().call(
-                        StateStore.URI, StateStore.METHOD_RECORD, null, b);
-            } catch (Throwable t) {
-                Logs.w("记录指标失败：" + id, t);
-            }
-        }
-        push();
-    }
-
-    /** hook 进程心跳信息，给 UI 显示 */
-    static volatile String HB = "";
-    private static volatile boolean sHbStarted;
-
-    /** 启动心跳：每 10 秒把 hook 进程状态写进 provider。 */
-    static void startHeartbeat() {
-        if (sHbStarted) return;
-        sHbStarted = true;
-
-        Context c = ctx();
-        if (c == null) {
-            // 等 Context 就绪
-            new android.os.Handler(android.os.Looper.getMainLooper())
-                    .postDelayed(State::startHeartbeat, 1000L);
-            return;
-        }
-
-        try {
-            String pkg = c.getPackageName();
-            String dataDir = c.getApplicationInfo().dataDir;
-            HB = "进程=" + pkg + " pid=" + android.os.Process.myPid()
-                    + "\n数据目录=" + dataDir;
-            Logs.fire("心跳", "hook 进程启动 pid=" + android.os.Process.myPid()
-                    + " 包名=" + pkg);
-
-            // 顺便把 OPPO 健康的数据库结构转储一次
-            String schema = HealthHook.dumpSchema();
-            Bundle hb = new Bundle();
-            hb.putString(StateStore.K_HEARTBEAT, HB);
-            hb.putString(StateStore.K_DB_SCHEMA, schema);
-            hb.putLong(StateStore.K_HB_TS, System.currentTimeMillis());
-            c.getContentResolver().call(
-                    StateStore.URI, StateStore.METHOD_PUT, null, hb);
-        } catch (Throwable t) {
-            Logs.w("心跳启动失败", t);
-        }
-
-        // 每 10 秒刷新一次时间
-        final android.os.Handler h =
-                new android.os.Handler(android.os.Looper.getMainLooper());
-        h.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                Context cc = ctx();
-                if (cc != null) {
-                    try {
-                        Bundle hb = new Bundle();
-                        hb.putLong(StateStore.K_HB_TS, System.currentTimeMillis());
-                        cc.getContentResolver().call(
-                                StateStore.URI, StateStore.METHOD_PUT, null, hb);
-                    } catch (Throwable ignored) {
-                    }
-                }
-                h.postDelayed(this, 10000L);
-            }
-        }, 10000L);
     }
 
     static void noteMessage(int sid, int cid, int len) {
@@ -306,20 +214,6 @@ final class State {
             b.putString(StateStore.K_COUNTS,
                     sleepCount.get() + "/" + sleepModeCount.get());
             b.putString(StateStore.K_LAST_MSG, lastMsg);
-
-            // 标量指标打包
-            StringBuilder ids = new StringBuilder();
-            StringBuilder vals = new StringBuilder();
-            for (java.util.Map.Entry<String, Long> e : SCALARS.entrySet()) {
-                if (ids.length() > 0) {
-                    ids.append(';');
-                    vals.append(';');
-                }
-                ids.append(e.getKey());
-                vals.append(e.getValue());
-            }
-            b.putString(StateStore.K_SCALAR_IDS, ids.toString());
-            b.putString(StateStore.K_SCALAR_VALS, vals.toString());
 
             c.getContentResolver().call(StateStore.URI, StateStore.METHOD_PUT, null, b);
         } catch (Throwable ignored) {

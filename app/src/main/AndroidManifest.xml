@@ -24,11 +24,6 @@
             </intent-filter>
         </activity>
 
-        <activity
-            android:name=".DataActivity"
-            android:exported="false"
-            android:label="数据详情" />
-
         <provider
             android:name=".StateStore"
             android:authorities="dev.watchtap.state"
