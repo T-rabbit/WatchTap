@@ -44,6 +44,8 @@ final class Prefs {
     static final String K_KEEPALIVE = "keepalive";
     /** 上次记录的睡眠模式状态（0/1），用于进程重启后恢复基线 */
     static final String K_LAST_SLEEP_MODE = "lastSleepMode";
+    /** 是否修复「睡眠模式联动免打扰」开关的显示 */
+    static final String K_FIX_SWITCH = "fixSwitch";
 
     private Prefs() {}
 
@@ -68,6 +70,38 @@ final class Prefs {
                 "/sdcard/Android/data/com.heytap.health/files/" + FILE_NAME,
         };
     }
+
+    /**
+     * 不依赖 Context 的读取。
+     *
+     * hook 在 onPackageLoaded 阶段拿不到 Context，但那时就需要知道
+     * 「开关修复」是否启用（晚了就装不上 hook 了）。
+     *
+     * 用固定路径直接读文件，读不到再用 root。
+     */
+    static boolean getBoolNoCtx(String key, boolean def, String pkgHint) {
+        java.util.LinkedHashSet<String> paths = new java.util.LinkedHashSet<>();
+        if (pkgHint != null) {
+            paths.add("/sdcard/Android/data/" + pkgHint + "/files/" + FILE_NAME);
+        }
+        paths.add("/sdcard/Android/data/com.heytap.health/files/" + FILE_NAME);
+        paths.add("/sdcard/Android/data/dev.watchtap/files/" + FILE_NAME);
+
+        for (String p : paths) {
+            String v = readLocal(new File(p), key);
+            if (v != null) return truthy(v);
+        }
+
+        if (Root.available()) {
+            for (String p : paths) {
+                String text = Root.exec("cat '" + p + "' 2>/dev/null", 3000);
+                String v = parseValue(text, key);
+                if (v != null) return truthy(v);
+            }
+        }
+        return def;
+    }
+
 
     /**
      * 读一个布尔偏好。

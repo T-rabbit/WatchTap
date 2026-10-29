@@ -38,6 +38,8 @@ public class MainActivity extends Activity {
     private Button mDndBtn;
     private android.widget.Switch mMuteSwitch;
     private android.widget.Switch mNotifySwitch;
+    private android.widget.Switch mFixSwitch;
+    private TextView mFixStatus;
 
     private final Handler mHandler = new Handler(Looper.getMainLooper());
     private boolean mRunning = true;
@@ -110,6 +112,22 @@ public class MainActivity extends Activity {
         root.addView(switchRow("通知其他应用",
                 "手表进入/退出睡眠模式时发一条安静通知，供 Tasker 等自动化捕获",
                 mNotifySwitch));
+
+        // 修复联动开关
+        mFixSwitch = makeSwitch(
+                Prefs.getBool(this, Prefs.K_FIX_SWITCH, false),
+                this::saveFixSwitch);
+        root.addView(switchRow("修复联动开关",
+                "让 OPPO 健康里显示「睡眠模式联动手机免打扰」选项。"
+                        + "开关消失时（如重装应用）打开，改完需重启 OPPO 健康",
+                mFixSwitch));
+
+        mFixStatus = new TextView(this);
+        mFixStatus.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9);
+        mFixStatus.setTextColor(0xFF6B7280);
+        mFixStatus.setPadding(dp(20), dp(2), dp(20), dp(4));
+        mFixStatus.setVisibility(View.GONE);
+        root.addView(mFixStatus);
 
         // 勿扰按钮
         mDndBtn = new Button(this);
@@ -398,6 +416,18 @@ public class MainActivity extends Activity {
             mMuteSwitch.setOnCheckedChangeListener((btn, checked) -> saveMutePref(checked));
         }
 
+        // ---- 修复联动开关 ----
+        boolean fix = Prefs.getBool(this, Prefs.K_FIX_SWITCH, false);
+        if (mFixSwitch.isChecked() != fix) {
+            mFixSwitch.setOnCheckedChangeListener(null);
+            mFixSwitch.setChecked(fix);
+            mFixSwitch.setOnCheckedChangeListener((btn, v) -> saveFixSwitch(v));
+        }
+        mFixStatus.setVisibility(fix ? View.VISIBLE : View.GONE);
+        if (fix && mFixStatus.getText().length() == 0) {
+            mFixStatus.setText("需重启 OPPO 健康后生效");
+        }
+
         // ---- 通知开关 ----
         boolean notify = Prefs.getBool(this, Prefs.K_NOTIFY, false);
         if (mNotifySwitch.isChecked() != notify) {
@@ -543,6 +573,24 @@ public class MainActivity extends Activity {
         refresh();
     }
 
+
+    /** 保存「修复联动开关」偏好。 */
+    private void saveFixSwitch(boolean on) {
+        Prefs.setBool(this, Prefs.K_FIX_SWITCH, on);
+        HookPrefsChannel.push(Prefs.K_FIX_SWITCH, on);
+
+        StateStore.logLocal(this, "修复联动开关：" + (on ? "已开启" : "已关闭"));
+
+        if (on) {
+            toast("已开启，重启 OPPO 健康后生效");
+            mFixStatus.setVisibility(View.VISIBLE);
+            mFixStatus.setText("需重启 OPPO 健康：\n"
+                    + "  adb shell su -c \"am force-stop com.heytap.health\"");
+        } else {
+            toast("已关闭，重启 OPPO 健康后恢复");
+            mFixStatus.setVisibility(View.GONE);
+        }
+    }
 
     /** 保存「通知其他应用」偏好。 */
     private void saveNotifyPref(boolean on) {
