@@ -35,6 +35,7 @@ public class MainActivity extends Activity {
     private TextView mLogView;
     private Button mDndBtn;
     private android.widget.Switch mMuteSwitch;
+    private android.widget.Switch mNotifySwitch;
 
     private final Handler mHandler = new Handler(Looper.getMainLooper());
     private boolean mRunning = true;
@@ -59,20 +60,20 @@ public class MainActivity extends Activity {
         // 标题
         TextView title = new TextView(this);
         title.setText("WatchTap");
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
         title.setTextColor(Color.WHITE);
         title.setTypeface(Typeface.DEFAULT_BOLD);
-        root.addView(title, lp(pad, dp(8), pad, dp(2)));
+        root.addView(title, lp(pad, dp(6), pad, dp(1)));
 
         TextView subtitle = new TextView(this);
         subtitle.setText("手表状态监控 · 每秒刷新");
         subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         subtitle.setTextColor(0xFF8B94A3);
-        root.addView(subtitle, lp(pad, 0, pad, dp(14)));
+        root.addView(subtitle, lp(pad, 0, pad, dp(10)));
 
         // 权限提示条
         mPermBar = new TextView(this);
-        mPermBar.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        mPermBar.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         mPermBar.setTextColor(Color.WHITE);
         mPermBar.setBackgroundColor(0xFFDC2626);
         int pp = dp(12);
@@ -97,55 +98,27 @@ public class MainActivity extends Activity {
         mSleepSub = new TextView(this);
         root.addView(card("生理睡眠检测", mSleepValue, mSleepSub));
 
-        // 同步静音开关（独立控制）
-        LinearLayout muteRow = new LinearLayout(this);
-        muteRow.setOrientation(LinearLayout.HORIZONTAL);
-        muteRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        muteRow.setBackgroundColor(0xFF1A1D24);
-        int mp = dp(14);
-        muteRow.setPadding(mp, mp, mp, mp);
+        // 开关区（统一构造）
+        mMuteSwitch = makeSwitch(true, this::saveMutePref);
+        root.addView(switchRow("同步静音",
+                "开启后勿扰会静音全部通知；关闭则允许优先通知",
+                mMuteSwitch));
 
-        LinearLayout muteTexts = new LinearLayout(this);
-        muteTexts.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout.LayoutParams textLp = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-
-        TextView muteTitle = new TextView(this);
-        muteTitle.setText("同步静音");
-        muteTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        muteTitle.setTextColor(Color.WHITE);
-
-        TextView muteDesc = new TextView(this);
-        muteDesc.setText("开启后勿扰会静音全部通知；关闭则允许优先通知");
-        muteDesc.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
-        muteDesc.setTextColor(0xFF6B7280);
-
-        muteTexts.addView(muteTitle);
-        muteTexts.addView(muteDesc);
-        muteRow.addView(muteTexts, textLp);
-
-        mMuteSwitch = new android.widget.Switch(this);
-        mMuteSwitch.setChecked(true);
-        mMuteSwitch.setOnCheckedChangeListener((btn, checked) -> {
-            saveMutePref(checked);
-        });
-        muteRow.addView(mMuteSwitch);
-
-        LinearLayout muteWrap = new LinearLayout(this);
-        muteWrap.setOrientation(LinearLayout.VERTICAL);
-        int mwp = dp(16);
-        muteWrap.setPadding(mwp, dp(2), mwp, dp(2));
-        muteWrap.addView(muteRow, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        root.addView(muteWrap);
+        mNotifySwitch = makeSwitch(false, this::saveNotifyPref);
+        root.addView(switchRow("通知其他应用",
+                "手表进入/退出睡眠模式时发一条安静通知，供 Tasker 等自动化捕获",
+                mNotifySwitch));
 
         // 勿扰按钮
         mDndBtn = new Button(this);
         mDndBtn.setText("切换勿扰");
         mDndBtn.setAllCaps(false);
-        mDndBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        mDndBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         mDndBtn.setTextColor(Color.WHITE);
         mDndBtn.setBackgroundColor(0xFF2563EB);
+        mDndBtn.setMinHeight(0);
+        mDndBtn.setMinimumHeight(0);
+        mDndBtn.setPadding(dp(8), dp(6), dp(8), dp(6));
         mDndBtn.setOnClickListener(v -> toggleDnd());
         root.addView(mDndBtn, lp(pad, dp(8), pad, dp(4)));
 
@@ -153,7 +126,10 @@ public class MainActivity extends Activity {
         Button probe = new Button(this);
         probe.setText("诊断勿扰写入");
         probe.setAllCaps(false);
-        probe.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        probe.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        probe.setMinHeight(0);
+        probe.setMinimumHeight(0);
+        probe.setPadding(dp(8), dp(6), dp(8), dp(6));
         probe.setTextColor(0xFFCBD5E1);
         probe.setBackgroundColor(0xFF7C2D12);
         probe.setOnClickListener(v -> runProbe());
@@ -163,7 +139,10 @@ public class MainActivity extends Activity {
         Button refresh = new Button(this);
         refresh.setText("刷新状态");
         refresh.setAllCaps(false);
-        refresh.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        refresh.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        refresh.setMinHeight(0);
+        refresh.setMinimumHeight(0);
+        refresh.setPadding(dp(8), dp(6), dp(8), dp(6));
         refresh.setTextColor(0xFFCBD5E1);
         refresh.setBackgroundColor(0xFF1E293B);
         refresh.setOnClickListener(v -> {
@@ -174,7 +153,7 @@ public class MainActivity extends Activity {
 
         // 诊断
         mDiag = new TextView(this);
-        mDiag.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        mDiag.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
         mDiag.setTextColor(0xFF6B7280);
         mDiag.setLineSpacing(dp(3), 1f);
         mDiag.setText("读取中…");
@@ -183,13 +162,13 @@ public class MainActivity extends Activity {
         // 日志标题
         TextView logTitle = new TextView(this);
         logTitle.setText("操作日志（最近 60 条）");
-        logTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        logTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
         logTitle.setTextColor(0xFF8B94A3);
         root.addView(logTitle, lp(pad, dp(8), pad, dp(6)));
 
         // 日志正文
         mLogView = new TextView(this);
-        mLogView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        mLogView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
         mLogView.setTextColor(0xFF7DD3FC);
         mLogView.setTypeface(Typeface.MONOSPACE);
         mLogView.setLineSpacing(dp(2), 1f);
@@ -215,31 +194,84 @@ public class MainActivity extends Activity {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setBackgroundColor(0xFF1A1D24);
-        int p = dp(14);
+        int p = dp(10);
         box.setPadding(p, p, p, p);
 
         TextView label = new TextView(this);
         label.setText(name);
-        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         label.setTextColor(0xFF8B94A3);
         box.addView(label);
 
         value.setText("--");
-        value.setTextSize(TypedValue.COMPLEX_UNIT_SP, 30);
+        value.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
         value.setTextColor(Color.WHITE);
         value.setTypeface(Typeface.DEFAULT_BOLD);
         box.addView(value);
 
         sub.setText("等待数据");
-        sub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        sub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
         sub.setTextColor(0xFF6B7280);
         box.addView(sub);
 
         LinearLayout wrap = new LinearLayout(this);
         wrap.setOrientation(LinearLayout.VERTICAL);
         int pad = dp(16);
-        wrap.setPadding(pad, dp(6), pad, dp(6));
+        wrap.setPadding(pad, dp(3), pad, dp(3));
         wrap.addView(box, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        return wrap;
+    }
+
+    /** 布尔回调，避免 lambda 参数类型推断问题。 */
+    private interface OnBool {
+        void on(boolean value);
+    }
+
+    /** 造一个紧凑的 Switch。 */
+    private android.widget.Switch makeSwitch(boolean checked, OnBool cb) {
+        android.widget.Switch sw = new android.widget.Switch(this);
+        sw.setChecked(checked);
+        sw.setOnCheckedChangeListener((btn, value) -> cb.on(value));
+        sw.setMinHeight(0);
+        sw.setMinimumHeight(0);
+        return sw;
+    }
+
+    /** 一行：左边标题+说明，右边开关。 */
+    private LinearLayout switchRow(String title, String desc, View control) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        row.setBackgroundColor(0xFF1A1D24);
+        int p = dp(10);
+        row.setPadding(p, p, p, p);
+
+        LinearLayout texts = new LinearLayout(this);
+        texts.setOrientation(LinearLayout.VERTICAL);
+
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        t.setTextColor(Color.WHITE);
+
+        TextView d = new TextView(this);
+        d.setText(desc);
+        d.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
+        d.setTextColor(0xFF6B7280);
+
+        texts.addView(t);
+        texts.addView(d);
+
+        row.addView(texts, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        if (control != null) row.addView(control);
+
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+        int wp = dp(16);
+        wrap.setPadding(wp, dp(2), wp, dp(2));
+        wrap.addView(row, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         return wrap;
     }
@@ -352,6 +384,14 @@ public class MainActivity extends Activity {
             mMuteSwitch.setOnCheckedChangeListener(null);
             mMuteSwitch.setChecked(mute);
             mMuteSwitch.setOnCheckedChangeListener((btn, checked) -> saveMutePref(checked));
+        }
+
+        // ---- 通知开关 ----
+        boolean notify = b.getBoolean(StateStore.K_NOTIFY, false);
+        if (mNotifySwitch.isChecked() != notify) {
+            mNotifySwitch.setOnCheckedChangeListener(null);
+            mNotifySwitch.setChecked(notify);
+            mNotifySwitch.setOnCheckedChangeListener((btn, checked) -> saveNotifyPref(checked));
         }
 
         // ---- 权限条 ----
@@ -489,6 +529,21 @@ public class MainActivity extends Activity {
         refresh();
     }
 
+    /** 保存「通知其他应用」偏好。 */
+    private void saveNotifyPref(boolean on) {
+        try {
+            Bundle b = new Bundle();
+            b.putBoolean(StateStore.K_NOTIFY, on);
+            getContentResolver().call(StateStore.URI, StateStore.METHOD_PUT, null, b);
+            StateStore.logLocal(this, "通知其他应用：" + (on ? "已开启" : "已关闭"));
+            if (on) {
+                toast("已开启，手表变化时会发通知");
+            }
+        } catch (Throwable t) {
+            toast("保存失败");
+        }
+    }
+
     /** 保存「同步静音」偏好。 */
     private void saveMutePref(boolean mute) {
         try {
@@ -518,6 +573,21 @@ public class MainActivity extends Activity {
         super.onResume();
         mRunning = true;
         tick();
+        ensureNotifyPermission();
+    }
+
+    /** Android 13+ 需要运行时申请通知权限，否则发不出通知。 */
+    private void ensureNotifyPermission() {
+        try {
+            if (android.os.Build.VERSION.SDK_INT < 33) return;
+            String perm = "android.permission.POST_NOTIFICATIONS";
+            if (checkSelfPermission(perm) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                return;
+            }
+            requestPermissions(new String[]{perm}, 2001);
+            StateStore.logLocal(this, "申请通知权限");
+        } catch (Throwable ignored) {
+        }
     }
 
     @Override

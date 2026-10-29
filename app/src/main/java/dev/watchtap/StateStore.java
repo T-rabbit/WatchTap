@@ -32,6 +32,8 @@ public class StateStore extends ContentProvider {
     public static final String METHOD_LOG = "log";
     /** 诊断：逐条测试勿扰写入路径，返回每一步结果 */
     public static final String METHOD_PROBE_DND = "probeDnd";
+    /** 发睡眠模式通知（由模块进程执行，通知归属 dev.watchtap） */
+    public static final String METHOD_NOTIFY = "notifySleep";
 
     // ---- 状态键 ----
     public static final String K_SLEEP_STATE = "sleepState";
@@ -43,6 +45,8 @@ public class StateStore extends ContentProvider {
     public static final String K_ZEN = "zen";
     /** 是否同步静音（用户偏好，不是系统状态） */
     public static final String K_MUTE = "mute";
+    /** 睡眠模式变化时是否发通知给自动化软件 */
+    public static final String K_NOTIFY = "notify";
     public static final String K_ZEN_TS = "zenTs";
     public static final String K_UPDATED = "updated";
     public static final String K_COUNTS = "counts";
@@ -101,6 +105,9 @@ public class StateStore extends ContentProvider {
             if (extras.containsKey(K_MUTE)) {
                 e.putBoolean(K_MUTE, extras.getBoolean(K_MUTE, true));
             }
+            if (extras.containsKey(K_NOTIFY)) {
+                e.putBoolean(K_NOTIFY, extras.getBoolean(K_NOTIFY, false));
+            }
             putLongIfPresent(extras, e, K_ZEN_TS);
             putLongIfPresent(extras, e, K_UPDATED);
             if (extras.containsKey(K_COUNTS)) {
@@ -132,6 +139,7 @@ public class StateStore extends ContentProvider {
             b.putLong(K_SLEEP_MODE_AT, p.getLong(K_SLEEP_MODE_AT, 0));
             b.putInt(K_ZEN, p.getInt(K_ZEN, -1));
             b.putBoolean(K_MUTE, p.getBoolean(K_MUTE, true));
+            b.putBoolean(K_NOTIFY, p.getBoolean(K_NOTIFY, false));
             b.putLong(K_ZEN_TS, p.getLong(K_ZEN_TS, 0));
             b.putLong(K_UPDATED, p.getLong(K_UPDATED, 0));
             b.putString(K_COUNTS, p.getString(K_COUNTS, ""));
@@ -139,6 +147,14 @@ public class StateStore extends ContentProvider {
             b.putString("logs", recentLogs());
             b.putBoolean("dndAccess", Dnd.hasAccess(getContext()));
             return b;
+        }
+
+        if (METHOD_NOTIFY.equals(method) && extras != null) {
+            boolean on = extras.getBoolean("on", false);
+            boolean ok = WatchNotify.send(getContext(), on);
+            Bundle r = new Bundle();
+            r.putBoolean("ok", ok);
+            return r;
         }
 
         if (METHOD_PROBE_DND.equals(method)) {

@@ -99,7 +99,10 @@ final class State {
 
         push();
 
-        if (changed) autoDnd(on == 1, mutePref());
+        if (changed) {
+            autoDnd(on == 1, mutePref());
+            maybeNotify(on == 1);
+        }
     }
 
     static void noteMessage(int sid, int cid, int len) {
@@ -123,6 +126,42 @@ final class State {
             return b == null || b.getBoolean(StateStore.K_MUTE, true);
         } catch (Throwable t) {
             return true;
+        }
+    }
+
+    /** 读取「发送通知」偏好。 */
+    static boolean notifyPref() {
+        Context c = ctx();
+        if (c == null) return false;
+        try {
+            Bundle b = c.getContentResolver().call(
+                    StateStore.URI, StateStore.METHOD_GET, null, null);
+            return b != null && b.getBoolean(StateStore.K_NOTIFY, false);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * 按偏好发送睡眠模式通知。
+     *
+     * hook 进程（com.heytap.health）发通知会显示成 OPPO 健康的通知，
+     * 自动化软件不好识别。所以通过 provider 让模块进程发。
+     */
+    static void maybeNotify(boolean on) {
+        if (!notifyPref()) {
+            Logs.i("通知开关已关闭，跳过发送");
+            return;
+        }
+        Context c = ctx();
+        if (c == null) return;
+        try {
+            Bundle b = new Bundle();
+            b.putBoolean("on", on);
+            c.getContentResolver().call(
+                    StateStore.URI, StateStore.METHOD_NOTIFY, null, b);
+        } catch (Throwable t) {
+            Logs.e("发送通知调用失败", t);
         }
     }
 
