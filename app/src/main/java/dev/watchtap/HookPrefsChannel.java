@@ -71,25 +71,13 @@ final class HookPrefsChannel {
             Logs.w("偏好同步失败：" + out.trim(), null);
         }
 
-        // 2. 没 root：试 ContentProvider（hook 进程若还活着能收到）
-        try {
-            Context c = ctx();
-            if (c != null) {
-                Bundle b = new Bundle();
-                b.putString("key", key);
-                b.putBoolean("value", value);
-                Bundle r = c.getContentResolver().call(
-                        StateStore.URI, StateStore.METHOD_APPLY_PREFS, null, b);
-                if (r != null && r.getBoolean("ok", false)) {
-                    Logs.fire("偏好", "已通过 provider 同步：" + key);
-                    return true;
-                }
-            }
-        } catch (Throwable ignored) {
-        }
-
-        Logs.i("偏好未能同步到 hook 进程（下次启动时读取）");
-        return false;
+        // 2. 没 root：不需要主动推送。
+        //
+        // hook 进程会在真正用到开关时（getRomVersionCode 被调用时）
+        // 通过 State.fixSwitchEnabled() 主动向 provider 读取。
+        // 那是普通 IPC，不需要 root，也不需要提前同步文件。
+        Logs.i("偏好已保存（hook 进程会在需要时主动读取）");
+        return true;
     }
 
     private static Context ctx() {

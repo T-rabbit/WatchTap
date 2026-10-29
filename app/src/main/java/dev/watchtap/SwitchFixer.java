@@ -56,7 +56,22 @@ final class SwitchFixer {
     /**
      * 安装 hook。
      *
-     * @return 是否装上了
+     * ==== 关键设计：无条件安装，运行时判断 ====
+     *
+     * 早期版本是「先读偏好，启用才安装」。但 onPackageLoaded 阶段
+     * Application 还没创建，拿不到 Context，只能靠读文件 ——
+     * 而 Android 11+ 禁止跨应用读文件，于是免 root 时读不到，
+     * hook 就装不上。
+     *
+     * 现在改成：**总是安装 hook**，在拦截器里每次检查开关状态。
+     *
+     * 好处：
+     *   - 安装时机不需要 Context（onPackageLoaded 就能装）
+     *   - 行为由运行时决定，那时 App 已启动，能通过 provider 读偏好
+     *   - 免 root 完全可行（provider 是普通 IPC，不需要 root）
+     *
+     * 代价：每次 getRomVersionCode 调用多一次开关判断，
+     * 但这是内存读，开销可忽略（该方法只在 UI 判断时调用）。
      */
     static boolean install(XposedInterface api, ClassLoader cl) {
         try {
@@ -67,16 +82,21 @@ final class SwitchFixer {
                 if (m.getParameterCount() != 0) continue;
                 if (m.getReturnType() != int.class) continue;
 
-                api.hook(m).intercept(chain -> FAKE_ROM_VERSION);
+                api.hook(m).intercept(chain -> {
+                    // 运行时判断：开关关着就走原逻辑
+                    if (!State.fixSwitchEnabled()) {
+                        return chain.proceed();
+                    }
+                    return FAKE_ROM_VERSION;
+                });
 
-                Logs.fire("开关修复", "已让 App 认为这是 ColorOS "
-                        + FAKE_ROM_VERSION);
+                Logs.i("开关修复已就位（运行时按开关决定是否生效）");
                 return true;
             }
             Logs.e("开关修复：没找到 getRomVersionCode 方法", null);
             return false;
         } catch (Throwable t) {
-            Logs.e("开关修复失败（可能版本不匹配）", t);
+            Logs.e("开关修复安装失败（可能版本不匹配）", t);
             return false;
         }
     }

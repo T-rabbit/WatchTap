@@ -50,16 +50,12 @@ public class Main extends XposedModule {
             Logs.e("消息监听安装失败", t);
         }
 
-        // 可选的：让 App 的「睡眠模式联动免打扰」开关显示出来。
-        // 默认关闭，用户可以在 UI 上打开。
+        // 让 App 的「睡眠模式联动免打扰」开关显示出来。
+        //
+        // 无条件安装，行为由运行时开关决定 —— 这样 onPackageLoaded
+        // 阶段不需要读偏好（那时没有 Context，免 root 也读不到文件）。
         try {
-            // onPackageLoaded 阶段 Context 通常还没就绪，
-            // 用不带 Context 的读取（直接读文件 + root 兜底）
-            if (Prefs.getBoolNoCtx(Prefs.K_FIX_SWITCH, false, PKG)) {
-                SwitchFixer.install(this, cl);
-            } else {
-                Logs.i("联动开关修复未启用（可在界面上打开）");
-            }
+            SwitchFixer.install(this, cl);
         } catch (Throwable t) {
             Logs.e("开关修复安装失败", t);
         }

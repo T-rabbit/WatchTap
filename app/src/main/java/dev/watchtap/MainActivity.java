@@ -125,12 +125,6 @@ public class MainActivity extends Activity {
         mFixBtn.setPadding(dp(8), dp(6), dp(8), dp(6));
         mFixBtn.setOnClickListener(v -> doFixSwitch());
 
-        // 无 root 时这个按钮会失效（跨应用文件读取被系统限制），提前说明
-        if (!Root.available()) {
-            mFixBtn.setEnabled(false);
-            mFixBtn.setBackgroundColor(0xFF374151);
-            mFixBtn.setText("修复联动开关显示（需要 root）");
-        }
         root.addView(mFixBtn, lp(pad, dp(6), pad, dp(2)));
 
         TextView fixDesc = new TextView(this);
@@ -584,44 +578,52 @@ public class MainActivity extends Activity {
     /**
      * 执行开关修复：让 OPPO 健康显示联动选项。
      *
-     * 一次性操作 —— 把偏好写进持久化存储并推送，之后 hook 装不装都不重要，
-     * 因为 App 一旦把选项渲染出来就会记住可见性。
+     * 免 root 版本：
+     *   1. 写进当前进程的偏好
+     *   2. 通过 provider 推给 OPPO 健康进程（普通 IPC，不需要特殊权限）
+     *   3. 重启 OPPO 健康
+     *
+     * hook 是无条件安装的，所以只要开关值能传到 hook 进程，
+     * 下次它判断时就生效 —— 不需要提前写文件。
      */
     private void doFixSwitch() {
         Prefs.setBool(this, Prefs.K_FIX_SWITCH, true);
-        HookPrefsChannel.push(Prefs.K_FIX_SWITCH, true);
 
-        StateStore.logLocal(this, "执行开关修复");
+        // provider 通道（免 root）
+        boolean pushed = false;
+        try {
+            Bundle b = new Bundle();
+            b.putBoolean(StateStore.K_FIX_SWITCH, true);
+            getContentResolver().call(StateStore.URI, StateStore.METHOD_PUT, null, b);
 
-        if (!Root.available()) {
-            mFixStatus.setVisibility(View.VISIBLE);
-            mFixStatus.setText("✗ 需要 root\n\n"
-                    + "开关状态要写进 OPPO 健康的目录，"
-                    + "而 Android 11+ 禁止跨应用写文件。\n\n"
-                    + "有 root 时用 su 写入，没有就只能手动操作：\n"
-                    + "  1. 打开 WatchTap 的开关（旧版）或用 adb 改 zen_mode\n"
-                    + "  2. 或者直接看 App 设置里是否有该选项");
-            toast("需要 root 权限");
-            return;
+            // 同时推给 hook 进程，让它立刻更新内存缓存
+            pushed = HookPrefsChannel.push(Prefs.K_FIX_SWITCH, true);
+        } catch (Throwable t) {
+            StateStore.logLocal(this, "推送失败：" + t);
         }
 
-        mFixStatus.setVisibility(View.VISIBLE);
-        mFixStatus.setText("✓ 已启用修复\n\n"
-                + "正在重启 OPPO 健康让 hook 生效…");
+        StateStore.logLocal(this, "执行开关修复（root=" + Root.available()
+                + ", pushed=" + pushed + "）");
 
-        // 自动重启目标应用：hook 只在进程启动时装，
-        // 不重启的话这次修复要等到下次 App 自己重启才生效。
+        mFixStatus.setVisibility(View.VISIBLE);
+        mFixStatus.setText("✓ 已启用修复\n\n正在重启 OPPO 健康…");
+
         restartTarget();
 
         mFixStatus.postDelayed(() -> {
-            mFixStatus.setText("✓ 已启用修复\n\n"
-                    + "OPPO 健康已重启。现在打开它的设置，看是否有\n"
-                    + "「睡眠模式联动手机防打扰」选项。\n\n"
-                    + "看到后手动打开它，选项显示会被 App 记住，\n"
-                    + "之后无需再点这个按钮。");
+            StringBuilder sb = new StringBuilder();
+            sb.append("✓ 已启用修复\n\n");
+            sb.append("OPPO 健康已重启。现在打开它的设置，看是否有\n");
+            sb.append("「睡眠模式联动手机防打扰」选项。\n\n");
+            sb.append("看到后手动打开它，选项显示会被 App 记住，\n");
+            sb.append("之后无需再点这个按钮。\n\n");
+            if (!Root.available()) {
+                sb.append("（无 root 模式：若没生效，请手动重启一次 OPPO 健康）");
+            }
+            mFixStatus.setText(sb.toString());
         }, 3000L);
 
-        toast("已重启 OPPO 健康");
+        toast("已启用，正在重启 OPPO 健康");
     }
 
     /**

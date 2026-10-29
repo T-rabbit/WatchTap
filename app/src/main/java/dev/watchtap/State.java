@@ -155,6 +155,49 @@ final class State {
     private static volatile boolean sMutePref = true;
     private static volatile boolean sNotifyPref = false;
 
+    /** 开关修复是否启用（运行时读取，带缓存）。 */
+    private static volatile boolean sFixSwitch;
+    private static volatile long sFixSwitchAt;
+
+    /**
+     * 是否启用「开关修复」。
+     *
+     * 免 root 也能读：走 provider 的普通 IPC（ContentResolver.call），
+     * 不需要任何特殊权限。provider 不在时用缓存值。
+     *
+     * 加 30 秒缓存，避免 UI 判断时反复 IPC。
+     */
+    static boolean fixSwitchEnabled() {
+        long now = System.currentTimeMillis();
+        if (now - sFixSwitchAt < 30_000L) return sFixSwitch;
+
+        sFixSwitchAt = now;
+
+        Context c = ctx();
+        if (c != null) {
+            try {
+                Bundle b = c.getContentResolver().call(
+                        StateStore.URI, StateStore.METHOD_GET, null, null);
+                if (b != null) {
+                    sFixSwitch = b.getBoolean(StateStore.K_FIX_SWITCH, false);
+                    return sFixSwitch;
+                }
+            } catch (Throwable ignored) {
+                // provider 不在
+            }
+        }
+
+        // 兜底：读文件（有 root 时能跨读，没 root 只能读自己的）
+        sFixSwitch = Prefs.getBool(c, Prefs.K_FIX_SWITCH, sFixSwitch);
+        return sFixSwitch;
+    }
+
+    /** UI 推送后立即更新缓存。 */
+    static void setFixSwitch(boolean v) {
+        sFixSwitch = v;
+        sFixSwitchAt = System.currentTimeMillis();
+    }
+
     /** 由 UI 通过 provider 推送后调用，立即生效。 */
     static void setMutePref(boolean v) {
         sMutePref = v;

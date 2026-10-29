@@ -61,6 +61,8 @@ public class StateStore extends ContentProvider {
     public static final String K_ZEN = "zen";
     /** 是否同步静音（用户偏好，不是系统状态） */
     public static final String K_MUTE = "mute";
+    /** 是否启用「修复联动开关显示」 */
+    public static final String K_FIX_SWITCH = "fixSwitch";
     /** 睡眠模式变化时是否发通知给自动化软件 */
     public static final String K_NOTIFY = "notify";
     public static final String K_ZEN_TS = "zenTs";
@@ -124,6 +126,9 @@ public class StateStore extends ContentProvider {
             if (extras.containsKey(K_NOTIFY)) {
                 e.putBoolean(K_NOTIFY, extras.getBoolean(K_NOTIFY, false));
             }
+            if (extras.containsKey(K_FIX_SWITCH)) {
+                e.putBoolean(K_FIX_SWITCH, extras.getBoolean(K_FIX_SWITCH, false));
+            }
             putLongIfPresent(extras, e, K_ZEN_TS);
             putLongIfPresent(extras, e, K_UPDATED);
             if (extras.containsKey(K_COUNTS)) {
@@ -156,6 +161,7 @@ public class StateStore extends ContentProvider {
             b.putInt(K_ZEN, p.getInt(K_ZEN, -1));
             b.putBoolean(K_MUTE, p.getBoolean(K_MUTE, true));
             b.putBoolean(K_NOTIFY, p.getBoolean(K_NOTIFY, false));
+            b.putBoolean(K_FIX_SWITCH, p.getBoolean(K_FIX_SWITCH, false));
             b.putLong(K_ZEN_TS, p.getLong(K_ZEN_TS, 0));
             b.putLong(K_UPDATED, p.getLong(K_UPDATED, 0));
             b.putString(K_COUNTS, p.getString(K_COUNTS, ""));
