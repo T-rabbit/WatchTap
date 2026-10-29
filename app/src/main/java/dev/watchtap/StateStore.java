@@ -42,6 +42,8 @@ public class StateStore extends ContentProvider {
     public static final String METHOD_COLLECT = "collect";
     /** 诊断 LSPosed 状态 */
     public static final String METHOD_LSPOSED = "lsposed";
+    /** 深度探测：数据到底存在哪 */
+    public static final String METHOD_DEEP = "deep";
 
     // ---- 状态键 ----
     public static final String K_SLEEP_STATE = "sleepState";
@@ -217,6 +219,12 @@ public class StateStore extends ContentProvider {
         if (METHOD_COLLECT.equals(method)) {
             Bundle r = new Bundle();
             r.putString("report", DbProbe.collect(getContext()));
+            return r;
+        }
+
+        if (METHOD_DEEP.equals(method)) {
+            Bundle r = new Bundle();
+            r.putString("report", DeepProbe.probe(getContext()));
             return r;
         }
 

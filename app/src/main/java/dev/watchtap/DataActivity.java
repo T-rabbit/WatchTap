@@ -113,6 +113,22 @@ public class DataActivity extends Activity {
         collect.setLayoutParams(clp);
         bar.addView(collect);
 
+        Button deep = new Button(this);
+        deep.setText("探测");
+        deep.setAllCaps(false);
+        deep.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        deep.setTextColor(Color.WHITE);
+        deep.setBackgroundColor(0xFF7C3AED);
+        deep.setMinHeight(0);
+        deep.setMinimumHeight(0);
+        deep.setPadding(dp(10), dp(5), dp(10), dp(5));
+        deep.setOnClickListener(v -> runDeep());
+        LinearLayout.LayoutParams dlp2 = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        dlp2.rightMargin = dp(6);
+        deep.setLayoutParams(dlp2);
+        bar.addView(deep);
+
         bar.addView(close);
         root.addView(bar);
 
@@ -359,6 +375,22 @@ public class DataActivity extends Activity {
         }
 
         return box;
+    }
+
+    /** 深度探测数据存储位置。 */
+    private void runDeep() {
+        StateStore.logLocal(this, "开始深度探测");
+
+
+        try {
+            android.os.Bundle r = getContentResolver().call(
+                    StateStore.URI, StateStore.METHOD_DEEP, null, null);
+            String raw = r == null ? "无返回" : r.getString("report", "");
+            if (raw == null || raw.isEmpty()) raw = "空报告";
+            showReport("数据位置探测", raw);
+        } catch (Throwable t) {
+            StateStore.logLocal(this, "探测失败：" + t);
+        }
     }
 
     /** 立即用 root 采集一次。 */
