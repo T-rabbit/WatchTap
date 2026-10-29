@@ -41,6 +41,8 @@ public class StateStore extends ContentProvider {
     /** 手表睡眠模式最后一次「上报」的时间。用于区分「当前值」和「上次值」 */
     public static final String K_SLEEP_MODE_AT = "sleepModeAt";
     public static final String K_ZEN = "zen";
+    /** 是否同步静音（用户偏好，不是系统状态） */
+    public static final String K_MUTE = "mute";
     public static final String K_ZEN_TS = "zenTs";
     public static final String K_UPDATED = "updated";
     public static final String K_COUNTS = "counts";
@@ -96,6 +98,9 @@ public class StateStore extends ContentProvider {
             putLongIfPresent(extras, e, K_SLEEP_MODE_TS);
             putLongIfPresent(extras, e, K_SLEEP_MODE_AT);
             putIntIfPresent(extras, e, K_ZEN);
+            if (extras.containsKey(K_MUTE)) {
+                e.putBoolean(K_MUTE, extras.getBoolean(K_MUTE, true));
+            }
             putLongIfPresent(extras, e, K_ZEN_TS);
             putLongIfPresent(extras, e, K_UPDATED);
             if (extras.containsKey(K_COUNTS)) {
@@ -126,6 +131,7 @@ public class StateStore extends ContentProvider {
             b.putLong(K_SLEEP_MODE_TS, p.getLong(K_SLEEP_MODE_TS, 0));
             b.putLong(K_SLEEP_MODE_AT, p.getLong(K_SLEEP_MODE_AT, 0));
             b.putInt(K_ZEN, p.getInt(K_ZEN, -1));
+            b.putBoolean(K_MUTE, p.getBoolean(K_MUTE, true));
             b.putLong(K_ZEN_TS, p.getLong(K_ZEN_TS, 0));
             b.putLong(K_UPDATED, p.getLong(K_UPDATED, 0));
             b.putString(K_COUNTS, p.getString(K_COUNTS, ""));
@@ -143,20 +149,18 @@ public class StateStore extends ContentProvider {
 
         if (METHOD_TOGGLE_DND.equals(method) && extras != null) {
             boolean on = extras.getBoolean("on", false);
+            boolean mute = extras.getBoolean("mute", true);
             Context c = getContext();
 
             boolean access = Dnd.hasAccess(c);
             int before = Dnd.zen(c);
 
-            boolean ok = Dnd.set(c, on);
+            boolean ok = Dnd.set(c, on, mute);
 
             int after = Dnd.zen(c);
-            Logs.fire("DND.toggle", "req=" + on
-                    + " access=" + access
-                    + " before=" + before
-                    + " after=" + after
-                    + " ok=" + ok
-                    + (ok && before == after ? " [NO_CHANGE]" : ""));
+            Logs.fire("勿扰", "操作完成："
+                    + Dnd.describe(before) + " → " + Dnd.describe(after)
+                    + (ok ? "" : "（失败）"));
 
             // 关键：把实际值写回状态，否则 UI 读到的还是旧值，
             // 导致下一次点击方向判断错误（日志里 req=true 但已经是开启）。

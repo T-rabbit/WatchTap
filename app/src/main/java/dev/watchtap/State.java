@@ -56,7 +56,7 @@ final class State {
         sleepState = state;
         sleepTs = toMs(tsSec);
         sleepCount.incrementAndGet();
-        Logs.fire("STATE.sleepState", "value=" + state + " ts=" + sleepTs);
+        Logs.fire("睡眠检测", state == 1 ? "检测到入睡" : "检测到清醒");
         push();
     }
 
@@ -74,12 +74,11 @@ final class State {
 
         // App 内部读取路径常带 ts=0（默认实例），忽略，避免把状态改成关
         if (!fromPush && ts <= 0) {
-            Logs.fire("STATE.sleepMode", "IGNORED read-path ts=0");
+            Logs.i("忽略一条无效的睡眠模式读取（无时间戳）");
             return;
         }
-        // 读取路径拿到的时间比已有上报更旧 → 忽略
         if (!fromPush && ts < sleepModeTs) {
-            Logs.fire("STATE.sleepMode", "IGNORED stale ts=" + ts + " < " + sleepModeTs);
+            Logs.i("忽略过期的睡眠模式数据");
             return;
         }
 
@@ -90,14 +89,17 @@ final class State {
         sleepModeAt = System.currentTimeMillis();
         sleepModeCount.incrementAndGet();
 
-        Logs.fire("STATE.sleepMode", "value=" + on
-                + " src=" + (fromPush ? "push" : "read")
-                + " ts=" + sleepModeTs
-                + (changed ? " [CHANGED]" : " [SAME]"));
+        String who = fromPush ? "手表上报" : "App读取";
+        if (changed) {
+            Logs.key(on == 1 ? "🌙" : "☀️",
+                    "手表" + (on == 1 ? "进入" : "退出") + "睡眠模式（" + who + "）");
+        } else {
+            Logs.i("手表仍在" + (on == 1 ? "睡眠" : "普通") + "模式（" + who + "）");
+        }
 
         push();
 
-        if (changed) autoDnd(on == 1);
+        if (changed) autoDnd(on == 1, mutePref());
     }
 
     static void noteMessage(int sid, int cid, int len) {
@@ -106,23 +108,48 @@ final class State {
 
     // ---------------------------------------------------------------- 联动
 
+    /**
+     * 读取用户的「同步静音」偏好。
+     *
+     * hook 进程读不到模块进程的 SharedPreferences，
+     * 所以通过 provider 的 GET 拿。
+     */
+    static boolean mutePref() {
+        Context c = ctx();
+        if (c == null) return true;
+        try {
+            Bundle b = c.getContentResolver().call(
+                    StateStore.URI, StateStore.METHOD_GET, null, null);
+            return b == null || b.getBoolean(StateStore.K_MUTE, true);
+        } catch (Throwable t) {
+            return true;
+        }
+    }
+
     /** 手表睡眠模式变化 → 请求 provider 进程切勿扰。 */
-    static void autoDnd(boolean on) {
+    static void autoDnd(boolean on, boolean mute) {
         Context c = ctx();
         if (c == null) {
-            Logs.e("AUTO.dnd: no context", null);
+            Logs.e("自动联动失败：拿不到上下文", null);
             return;
         }
         try {
+            Logs.fire("自动联动", (on ? "开启" : "关闭") + "勿扰"
+                    + (on ? (mute ? "（同步静音）" : "（不同步静音）") : ""));
             Bundle b = new Bundle();
             b.putBoolean("on", on);
+            b.putBoolean("mute", mute);
             Bundle r = c.getContentResolver().call(
                     StateStore.URI, StateStore.METHOD_TOGGLE_DND, null, b);
             boolean ok = r != null && r.getBoolean("ok", false);
             int zen = r == null ? -1 : r.getInt("zen", -1);
-            Logs.fire("AUTO.dnd", "req=" + on + " ok=" + ok + " zen=" + zen);
+            if (ok) {
+                Logs.key("✓", "自动联动成功，勿扰状态：" + Dnd.describe(zen));
+            } else {
+                Logs.e("自动联动失败，勿扰状态：" + Dnd.describe(zen), null);
+            }
         } catch (Throwable t) {
-            Logs.e("AUTO.dnd: call failed", t);
+            Logs.e("自动联动调用失败", t);
         }
     }
 
@@ -159,7 +186,7 @@ final class State {
     /** Context 就绪后同步一次，UI 首屏就有数据。 */
     static void syncZen() {
         if (ctx() == null) return;
-        Logs.fire("STATE.sync", "initial push");
+        Logs.i("已连接手表应用，开始同步状态");
         push();
     }
 

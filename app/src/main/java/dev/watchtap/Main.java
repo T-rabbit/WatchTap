@@ -24,30 +24,30 @@ public class Main extends XposedModule {
     @Override
     public void onModuleLoaded(XposedModuleInterface.ModuleLoadedParam p) {
         api = this;
-        Logs.fire("module.loaded", "process=" + p.getProcessName());
+        Logs.fire("模块", "已加载到 " + p.getProcessName());
     }
 
     @Override
     public void onPackageLoaded(XposedModuleInterface.PackageLoadedParam p) {
         if (!PKG.equals(p.getPackageName())) return;
-        Logs.fire("target.loaded", "pkg=" + PKG);
+        Logs.fire("模块", "开始接管 OPPO 健康");
 
         ClassLoader cl = p.getDefaultClassLoader();
 
         try {
             hookSleepMode(cl);
         } catch (Throwable t) {
-            Logs.e("hookSleepMode failed", t);
+            Logs.e("睡眠模式监听安装失败", t);
         }
         try {
             hookSleepState(cl);
         } catch (Throwable t) {
-            Logs.e("hookSleepState failed", t);
+            Logs.e("生理睡眠监听安装失败", t);
         }
         try {
             hookMessages(cl);
         } catch (Throwable t) {
-            Logs.e("hookMessages failed", t);
+            Logs.e("消息监听安装失败", t);
         }
 
         warmup();
@@ -56,7 +56,7 @@ public class Main extends XposedModule {
     @Override
     public void onPackageReady(XposedModuleInterface.PackageReadyParam p) {
         if (!PKG.equals(p.getPackageName())) return;
-        Logs.fire("target.ready", "application created");
+        Logs.fire("模块", "OPPO 健康已就绪");
         State.attach(appCtx());
         State.syncZen();
     }
@@ -72,7 +72,7 @@ public class Main extends XposedModule {
     private void hookSleepMode(ClassLoader cl) {
         Class<?> c = load(cl, "com.heytap.device.sleep.SleepModeManager");
         if (c == null) {
-            Logs.e("SleepModeManager NOT FOUND", null);
+            Logs.e("未找到睡眠模式相关类，可能版本不匹配", null);
             return;
         }
         int n = 0;
@@ -85,17 +85,17 @@ public class Main extends XposedModule {
                     Object setting = chain.getArg(0);
                     boolean startNow = bool(setting, "isStartNow");
                     long ts = longVal(setting, "getTimestamp");
-                    Logs.fire("HOOK.sleepMode",
-                            "startNow=" + startNow + " ts=" + ts);
+                    Logs.fire("手表上报", "睡眠模式=" + (startNow ? "开" : "关")
+                            + "，时间 " + fmtTs(ts));
                     State.setSleepMode(startNow ? 1 : 0, ts, true);
                 } catch (Throwable t) {
-                    Logs.e("hook.sleepMode parse error", t);
+                    Logs.e("解析睡眠模式失败", t);
                 }
                 return chain.proceed();
             });
             n++;
         }
-        Logs.fire("hook.sleepMode", n > 0 ? "installed=" + n : "NOT FOUND");
+        Logs.fire("监听", n > 0 ? "睡眠模式监听已就位" : "未找到睡眠模式接口");
     }
 
     // ------------------------------------------------------------ 生理睡眠
@@ -104,7 +104,7 @@ public class Main extends XposedModule {
         Class<?> c = load(cl,
                 "com.heytap.device.data.sporthealth.repository.SleepStateRepository$Companion");
         if (c == null) {
-            Logs.e("SleepStateRepository NOT FOUND", null);
+            Logs.e("未找到生理睡眠相关类，可能版本不匹配", null);
             return;
         }
         int n = 0;
@@ -116,16 +116,17 @@ public class Main extends XposedModule {
                 try {
                     int state = ((Number) chain.getArg(0)).intValue();
                     long ts = ((Number) chain.getArg(1)).longValue();
-                    Logs.fire("HOOK.sleepState", "state=" + state + " ts=" + ts);
+                    Logs.fire("手表上报", "生理状态=" + (state == 1 ? "睡眠" : "清醒")
+                            + "，时间 " + fmtTs(ts));
                     State.setSleepState(state, ts);
                 } catch (Throwable t) {
-                    Logs.e("hook.sleepState parse error", t);
+                    Logs.e("解析生理睡眠失败", t);
                 }
                 return chain.proceed();
             });
             n++;
         }
-        Logs.fire("hook.sleepState", n > 0 ? "installed=" + n : "NOT FOUND");
+        Logs.fire("监听", n > 0 ? "生理睡眠监听已就位" : "未找到生理睡眠接口");
     }
 
     // ------------------------------------------------------------ 消息层兜底
@@ -140,7 +141,7 @@ public class Main extends XposedModule {
     private void hookMessages(ClassLoader cl) {
         Class<?> c = load(cl, "com.heytap.health.devicemanager.btclient.BTClient");
         if (c == null) {
-            Logs.e("BTClient NOT FOUND", null);
+            Logs.e("未找到消息收发类，可能版本不匹配", null);
             return;
         }
         int n = 0;
@@ -162,27 +163,23 @@ public class Main extends XposedModule {
                         if (sid == 5 && (cid == 0xcc || cid == 0x49) && len >= 4) {
                             int f3 = field3(data);
                             if (f3 >= 0) {
-                                Logs.fire("HOOK.msg.sleepMode",
-                                        "cid=0x" + Integer.toHexString(cid)
-                                                + " field3=" + f3 + " len=" + len);
+                                Logs.fire("消息层", "读到睡眠模式=" + (f3 == 1 ? "开" : "关"));
                                 State.setSleepMode(f3 == 1 ? 1 : 0,
                                         System.currentTimeMillis() / 1000L, true);
                             } else {
-                                Logs.fire("HOOK.msg.sleepMode",
-                                        "cid=0x" + Integer.toHexString(cid)
-                                                + " no field3 (len=" + len + ")");
+                                Logs.i("消息层：这条数据不含睡眠模式状态");
                             }
                         }
                     }
                 } catch (Throwable t) {
-                    Logs.e("hook.msg parse error", t);
+                    Logs.e("解析手表消息失败", t);
                 }
                 return chain.proceed();
             });
             n++;
             break;
         }
-        Logs.fire("hook.messages", n > 0 ? "installed" : "NOT FOUND");
+        Logs.fire("监听", n > 0 ? "手表消息监听已就位" : "未找到消息接口");
     }
 
     /** 取 protobuf 里 field3 的值，不存在返回 -1。 */
@@ -244,11 +241,11 @@ public class Main extends XposedModule {
                 if (c != null) {
                     State.attach(c);
                     State.syncZen();
-                    Logs.fire("context.ready", "try=" + tries);
+                    Logs.i("已连接到 OPPO 健康进程");
                     return;
                 }
                 if (++tries < 60) h.postDelayed(this, 500L);
-                else Logs.e("context NOT available after 30s", null);
+                else Logs.e("30 秒内未能连接 OPPO 健康，请确认模块已启用", null);
             }
         }, 500L);
     }
@@ -287,6 +284,14 @@ public class Main extends XposedModule {
         } catch (Throwable ignored) {
         }
         return 0;
+    }
+
+    /** 时间戳转 HH:mm:ss，给日志用。 */
+    private static String fmtTs(long sec) {
+        if (sec <= 0) return "未知";
+        long ms = sec < 100000000000L ? sec * 1000L : sec;
+        return new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+                .format(new java.util.Date(ms));
     }
 
     private static Class<?> load(ClassLoader cl, String name) {

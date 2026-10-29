@@ -6,38 +6,34 @@ import android.os.Build;
 import android.provider.Settings;
 
 /**
- * 勿扰模式开关。
+ * 勿扰模式开关 + 静音策略。
  *
- * ==== 目标 ====
- * 只要求「勿扰开启 / 关闭」，不实现「仅闹钟」这类静音策略。
+ * ==== 两个独立控制 ====
  *
- * ==== 为什么用 INTERRUPTION_FILTER_NONE ====
- * 诊断实测：
- *   setInterruptionFilter(5) → IllegalArgumentException: Invalid filter: 5
- *   setInterruptionFilter(4) → 可用
+ * 1) 勿扰开关（on/off）
+ *    开启 → setInterruptionFilter(NONE 或 PRIORITY)
+ *    关闭 → setInterruptionFilter(ALL)
  *
- * setInterruptionFilter 的合法值只有 1(ALL) / 2(PRIORITY) / 4(NONE)。
- * ALARMS(5) 只能用于 AutomaticZenRule 的 interruptionFilter，不能直接传。
+ * 2) 同步静音（mute）
+ *    开启 → FILTER_NONE(4)     完全静音，通知不响不亮
+ *    关闭 → FILTER_PRIORITY(2) 仍算勿扰，但允许优先通知（来电等）
  *
- * 所以：
- *   开启勿扰 → FILTER_NONE(4)  → Settings.Global.zen_mode = 2
- *   关闭勿扰 → FILTER_ALL (1)  → Settings.Global.zen_mode = 0
+ * 也就是说「勿扰开着但不同步静音」= PRIORITY 模式，
+ * 系统状态栏仍显示勿扰图标，但通知不会全被拦。
  *
- * 注意：NONE 会连闹钟一起静音。这是「完全勿扰」的语义。
+ * ==== 实测注意 ====
+ * 这台 HyperOS 上 FILTER_NONE(4) 得到 zen_mode=3（仅闹钟），
+ * 而不是 AOSP 的 2（完全静音）。所以显示时按实际值判断。
  *
- * ==== targetSdk 必须是 34 ====
- * Android 15 起，targetSdk >= 35 时 setInterruptionFilter 会被系统转换成
- * AutomaticZenRule（应用自己的规则），导致 zen_mode 不变。build.gradle 与
- * build_apk.sh 里都固定 34。
+ * FILTER_ALARMS(5) 不能传给 setInterruptionFilter，会抛
+ * IllegalArgumentException: Invalid filter: 5。它只能用于 AZR。
  */
 final class Dnd {
 
     static final int ZEN_OFF = 0;
-    /** FILTER_NONE 对应的 zen_mode 值 */
-    static final int ZEN_ON = 2;
 
     static final int FILTER_ALL = 1;
-    /** NotificationManager.INTERRUPTION_FILTER_NONE */
+    static final int FILTER_PRIORITY = 2;
     static final int FILTER_NONE = 4;
 
     private Dnd() {}
@@ -45,155 +41,135 @@ final class Dnd {
     // ================================================================ 主入口
 
     /**
-     * 开关勿扰。
+     * 设置勿扰。
      *
-     * @return 以 zen_mode 实际变化为准
+     * @param on   是否开启勿扰
+     * @param mute 是否同步静音（仅 on=true 时有意义）
+     * @return 是否达到预期状态
      */
-    static boolean set(Context ctx, boolean on) {
+    static boolean set(Context ctx, boolean on, boolean mute) {
         if (ctx == null) {
-            Logs.e("DND.set: no context", null);
+            Logs.e("勿扰设置失败：拿不到上下文", null);
             return false;
         }
 
         int before = zen(ctx);
-        boolean already = on ? (before > 0) : (before == 0);
-        if (already) {
-            Logs.fire("DND.set", "already " + (on ? "on" : "off") + " zen=" + before);
+        int wanted = on ? (mute ? FILTER_NONE : FILTER_PRIORITY) : FILTER_ALL;
+
+        // 已经符合预期就不用动
+        if (matches(before, on, mute)) {
+            Logs.fire("勿扰", "状态已是「" + describe(before) + "」，无需操作");
             return true;
         }
 
+        Logs.fire("勿扰", "准备切换：当前「" + describe(before) + "」→ 目标「"
+                + describeFilter(wanted) + "」");
+
         // 路径 1：标准 API
-        String e1 = tryFilter(ctx, on);
+        String err = tryFilter(ctx, wanted);
         int after = verify(ctx);
-        if (on ? after > 0 : after == 0) {
-            Logs.fire("DND.set", "target=" + (on ? "ON" : "OFF")
-                    + " before=" + before + " after=" + after + " via=filter [OK]");
+        if (matches(after, on, mute)) {
+            Logs.key("✓", "勿扰已切换为「" + describe(after) + "」");
             return true;
         }
 
         // 路径 2：root 兜底
-        String e2 = tryRoot(ctx, on);
+        String err2 = tryRoot(ctx, on, mute);
         after = verify(ctx);
-        if (on ? after > 0 : after == 0) {
-            Logs.fire("DND.set", "target=" + (on ? "ON" : "OFF")
-                    + " before=" + before + " after=" + after + " via=root [OK]");
+        if (matches(after, on, mute)) {
+            Logs.key("✓", "勿扰已切换为「" + describe(after) + "」（root）");
             return true;
         }
 
-        // 路径 3：关闭时如果还残留 AZR 规则，清掉它们。
-        // zen=3 有时是某条规则（如系统就寝模式）导致的，filter 清不掉。
+        // 路径 3：关闭时清残留规则
         if (!on) {
-            String e3 = clearRules(ctx);
+            String err3 = clearRules(ctx);
             after = verify(ctx);
-            if (after == 0) {
-                Logs.fire("DND.set", "target=OFF before=" + before
-                        + " after=0 via=clearRules [OK]");
+            if (after == ZEN_OFF) {
+                Logs.key("✓", "勿扰已关闭（清理规则）");
                 return true;
             }
-            e2 = (e2 == null ? "" : e2 + " | ") + e3;
+            Logs.e("勿扰关闭失败", null);
+            Logs.i("  标准接口：" + (err == null ? "调用成功但没生效" : err));
+            Logs.i("  root：" + (err2 == null ? "调用成功但没生效" : err2));
+            Logs.i("  清理规则：" + err3);
+            return false;
         }
 
-        Logs.fire("DND.set", "target=" + (on ? "ON" : "OFF")
-                + " before=" + before + " after=" + after
-                + " filter=" + (e1 == null ? "ok-no-effect" : e1)
-                + " root=" + (e2 == null ? "ok-no-effect" : e2)
-                + " [FAILED]");
+        Logs.e("勿扰开启失败", null);
+        Logs.i("  标准接口：" + (err == null ? "调用成功但没生效" : err));
+        Logs.i("  root：" + (err2 == null ? "调用成功但没生效" : err2));
         return false;
+    }
+
+    /** 判断当前 zen 是否符合「on + mute」的预期。 */
+    private static boolean matches(int zen, boolean on, boolean mute) {
+        if (!on) return zen == ZEN_OFF;
+        if (zen == ZEN_OFF) return false;
+        // 开着即可；静音策略不强制匹配（不同 ROM 映射不同）
+        return true;
     }
 
     // ================================================================ 路径
 
-    /** 标准 API。合法值只有 1/2/4。 */
-    private static String tryFilter(Context ctx, boolean on) {
+    private static String tryFilter(Context ctx, int filter) {
         try {
             NotificationManager nm = (NotificationManager) ctx.getSystemService(
                     Context.NOTIFICATION_SERVICE);
-            if (nm == null) return "NotificationManager null";
+            if (nm == null) return "通知服务不可用";
 
-            int filter = on ? FILTER_NONE : FILTER_ALL;
             nm.setInterruptionFilter(filter);
-            Logs.fire("DND.filter", "setInterruptionFilter(" + filter + ")");
+            Logs.fire("勿扰", "已调用系统接口（filter=" + filter + "）");
             return null;
         } catch (SecurityException se) {
-            Logs.e("DND.filter: 无勿扰权限", se);
-            return Logs.describe(se);
+            return "没有勿扰权限";
         } catch (Throwable t) {
-            Logs.w("DND.filter failed", t);
-            return Logs.describe(t);
+            return Logs.brief(t);
         }
     }
 
-    /**
-     * root 兜底：settings put + cmd notification。
-     *
-     * settings put 只改数据库，NMS 内存态不会立刻跟；cmd 会让它重载。
-     */
-    private static String tryRoot(Context ctx, boolean on) {
-        String[][] cmds = {
-                {"settings", "put", "global", "zen_mode", String.valueOf(on ? ZEN_ON : ZEN_OFF)},
-                {"cmd", "notification", "--zen", on ? "none" : "off"},
+    private static String tryRoot(Context ctx, boolean on, boolean mute) {
+        String zen = on ? (mute ? "none" : "priority") : "off";
+        String[] cmds = {
+                "settings put global zen_mode " + (on ? (mute ? 2 : 1) : 0),
+                "cmd notification --zen " + zen,
         };
 
-        StringBuilder log = new StringBuilder();
-        boolean anyOk = false;
-
-        for (String[] c : cmds) {
-            String cmd = join(c);
+        StringBuilder fail = new StringBuilder();
+        for (String cmd : cmds) {
             try {
                 Process p = Runtime.getRuntime().exec(new String[]{"su", "-c", cmd});
                 int rc = p.waitFor();
-                log.append(cmd).append(" rc=").append(rc).append("; ");
-                if (rc == 0) anyOk = true;
+                if (rc != 0) fail.append(cmd).append(" 返回 ").append(rc).append("；");
             } catch (Throwable t) {
-                log.append(cmd).append(" ERR=").append(Logs.describe(t)).append("; ");
+                fail.append(cmd).append(" 失败（").append(Logs.brief(t)).append("）；");
             }
         }
-
-        Logs.fire("DND.root", log.toString());
-        return anyOk ? null : log.toString();
+        return fail.length() == 0 ? null : fail.toString();
     }
 
-    /**
-     * 清除所有非系统自动规则，用于关闭勿扰。
-     *
-     * HyperOS 上 zen_mode 可能是 3（仅闹钟），有时是系统就寝/驾驶规则造成的，
-     * setInterruptionFilter(ALL) 不一定能清掉，需要显式删规则。
-     */
     private static String clearRules(Context ctx) {
         try {
             NotificationManager nm = (NotificationManager) ctx.getSystemService(
                     Context.NOTIFICATION_SERVICE);
-            if (nm == null) return "NotificationManager null";
+            if (nm == null) return "通知服务不可用";
 
             java.util.Map<String, android.app.AutomaticZenRule> rules =
                     nm.getAutomaticZenRules();
-            if (rules == null || rules.isEmpty()) return "no rules";
+            if (rules == null || rules.isEmpty()) return "没有残留规则";
 
-            StringBuilder sb = new StringBuilder();
-            for (java.util.Map.Entry<String, android.app.AutomaticZenRule> e : rules.entrySet()) {
+            int n = 0;
+            for (String id : rules.keySet()) {
                 try {
-                    boolean ok = nm.removeAutomaticZenRule(e.getKey());
-                    sb.append(e.getKey()).append('=').append(ok).append("; ");
-                } catch (Throwable t) {
-                    sb.append(e.getKey()).append("=ERR(")
-                            .append(Logs.describe(t)).append("); ");
+                    if (nm.removeAutomaticZenRule(id)) n++;
+                } catch (Throwable ignored) {
                 }
             }
-            Logs.fire("DND.clearRules", sb.toString());
-            return sb.toString();
+            Logs.fire("勿扰", "清理了 " + n + " 条残留规则");
+            return "清理了 " + n + " 条";
         } catch (Throwable t) {
-            Logs.w("DND.clearRules failed", t);
-            return Logs.describe(t);
+            return Logs.brief(t);
         }
-    }
-
-    private static String join(String[] a) {
-        StringBuilder sb = new StringBuilder();
-        for (String s : a) {
-            if (sb.length() > 0) sb.append(' ');
-            sb.append(s);
-        }
-        return sb.toString();
     }
 
     // ================================================================ 读取
@@ -209,22 +185,19 @@ final class Dnd {
 
     /**
      * 写入后复核。
-     *
-     * Settings.Global.getInt 走进程内缓存，别的进程刚改的值可能读不到，
-     * 所以等一下再读两次确认。
+     * Settings 有进程内缓存，别的进程刚改的值可能读不到，所以等一下再读。
      */
     private static int verify(Context ctx) {
         try {
             Thread.sleep(150L);
         } catch (InterruptedException ignored) {
         }
-        int a = zen(ctx);
+        zen(ctx);
         try {
             Thread.sleep(100L);
         } catch (InterruptedException ignored) {
         }
-        int b = zen(ctx);
-        return b;
+        return zen(ctx);
     }
 
     static boolean hasAccess(Context ctx) {
@@ -238,78 +211,104 @@ final class Dnd {
         }
     }
 
+    // ================================================================ 描述
+
+    /** zen_mode 转人话 */
+    static String describe(int zen) {
+        switch (zen) {
+            case 0: return "已关闭";
+            case 1: return "已开启·仅优先通知";
+            case 2: return "已开启·完全静音";
+            case 3: return "已开启·仅闹钟";
+            case 4: return "已开启·仅闹钟";
+            default: return zen < 0 ? "读取失败" : ("已开启·模式" + zen);
+        }
+    }
+
+    /** filter 值转人话 */
+    private static String describeFilter(int filter) {
+        switch (filter) {
+            case FILTER_ALL: return "已关闭";
+            case FILTER_PRIORITY: return "已开启·仅优先通知";
+            case FILTER_NONE: return "已开启·完全静音";
+            default: return "模式" + filter;
+        }
+    }
+
+    /** 根据 zen 判断是否同步静音 */
+    static boolean isMuted(int zen) {
+        // 2=完全静音 3/4=仅闹钟，都算「静音」
+        return zen >= 2;
+    }
+
     // ================================================================ 诊断
 
-    /** 诊断：测试两条路径，返回详细报告。 */
     static String probe(Context ctx) {
         StringBuilder sb = new StringBuilder();
-        if (ctx == null) return "no context";
+        if (ctx == null) return "拿不到上下文";
 
         int before = zen(ctx);
-        sb.append("初始 zen=").append(before).append('\n');
-        sb.append("权限 access=").append(hasAccess(ctx)).append('\n');
-        sb.append("sdk=").append(Build.VERSION.SDK_INT)
-                .append(" target=").append(ctx.getApplicationInfo().targetSdkVersion).append('\n');
+        Logs.i("—— 诊断开始 ——");
 
-        boolean turnOn = before == 0;
-        sb.append("目标=").append(turnOn ? "开启勿扰" : "关闭勿扰").append("\n\n");
+        sb.append("当前状态：").append(describe(before)).append('\n');
+        sb.append("勿扰权限：").append(hasAccess(ctx) ? "已授权" : "未授权").append('\n');
+        sb.append("系统版本：Android ").append(Build.VERSION.SDK_INT)
+                .append("，targetSdk ").append(ctx.getApplicationInfo().targetSdkVersion)
+                .append("\n\n");
 
-        sb.append("[1] setInterruptionFilter(").append(turnOn ? FILTER_NONE : FILTER_ALL)
-                .append(")\n");
-        String e1 = tryFilter(ctx, turnOn);
+        boolean turnOn = before == ZEN_OFF;
+        sb.append("测试 ").append(turnOn ? "开启" : "关闭").append("…\n\n");
+
+        sb.append("① 系统标准接口\n");
+        String e1 = tryFilter(ctx, turnOn ? FILTER_NONE : FILTER_ALL);
         int a1 = verify(ctx);
-        sb.append("    ").append(e1 == null ? "调用成功" : "失败: " + e1)
-                .append(" → zen=").append(a1);
-        if (turnOn ? a1 > 0 : a1 == 0) return sb.append("  ✓\n").toString();
-        sb.append("  ✗\n\n");
+        sb.append("   ").append(e1 == null ? "调用成功" : "失败：" + e1)
+                .append("，结果：").append(describe(a1)).append('\n');
+        boolean ok1 = turnOn ? a1 > 0 : a1 == 0;
+        sb.append(ok1 ? "   ✓ 成功\n\n" : "   ✗ 没生效\n\n");
 
-        sb.append("[2] root: settings put + cmd notification\n");
-        String e2 = tryRoot(ctx, turnOn);
-        int a2 = verify(ctx);
-        sb.append("    ").append(e2 == null ? "调用成功" : "失败: " + e2)
-                .append(" → zen=").append(a2);
-        if (turnOn ? a2 > 0 : a2 == 0) {
-            sb.append("  ✓\n\n");
-            // 成功后再验证能否切回来 —— 这是上一版反馈的问题
-            sb.append("--- 反向验证 ---\n");
-            sb.append("[3] 切回 ").append(turnOn ? "关闭" : "开启").append('\n');
-            String e3 = tryFilter(ctx, !turnOn);
-            int a3 = verify(ctx);
-            sb.append("    ").append(e3 == null ? "调用成功" : "失败: " + e3)
-                    .append(" → zen=").append(a3);
-            if (turnOn ? a3 == 0 : a3 > 0) {
-                sb.append("  ✓ 双向正常\n");
-            } else {
-                sb.append("  ✗ 切不回去\n");
-                sb.append("    尝试清规则…\n");
-                String e4 = clearRules(ctx);
-                int a4 = verify(ctx);
-                sb.append("    ").append(e4).append(" → zen=").append(a4);
-                sb.append(a4 == 0 ? "  ✓\n" : "  ✗\n");
+        if (!ok1) {
+            sb.append("② root 命令\n");
+            String e2 = tryRoot(ctx, turnOn, true);
+            int a2 = verify(ctx);
+            sb.append("   ").append(e2 == null ? "调用成功" : "失败：" + e2)
+                    .append("，结果：").append(describe(a2)).append('\n');
+            boolean ok2 = turnOn ? a2 > 0 : a2 == 0;
+            sb.append(ok2 ? "   ✓ 成功\n\n" : "   ✗ 没生效\n\n");
+            if (ok2) {
+                sb.append("—— 反向验证 ——\n");
+                sb.append("③ 切回 ").append(turnOn ? "关闭" : "开启").append('\n');
+                tryFilter(ctx, turnOn ? FILTER_ALL : FILTER_NONE);
+                int a3 = verify(ctx);
+                sb.append("   结果：").append(describe(a3)).append('\n');
+                sb.append((turnOn ? a3 == 0 : a3 > 0) ? "   ✓ 双向正常\n" : "   ✗ 切不回去\n");
             }
             return sb.toString();
         }
-        sb.append("  ✗\n\n");
 
-        sb.append("✗ 两条路径均失败\n");
-        sb.append("详细异常见日志");
+        // 正向成功，验证能否切回
+        sb.append("—— 反向验证 ——\n");
+        sb.append("② 切回 ").append(turnOn ? "关闭" : "开启").append('\n');
+        String e3 = tryFilter(ctx, turnOn ? FILTER_ALL : FILTER_NONE);
+        int a3 = verify(ctx);
+        sb.append("   ").append(e3 == null ? "调用成功" : "失败：" + e3)
+                .append("，结果：").append(describe(a3)).append('\n');
+        boolean ok3 = turnOn ? a3 == 0 : a3 > 0;
+        if (ok3) {
+            sb.append("   ✓ 双向正常\n");
+        } else {
+            sb.append("   ✗ 切不回去，尝试清理规则\n");
+            clearRules(ctx);
+            int a4 = verify(ctx);
+            sb.append("   清理后：").append(describe(a4)).append('\n');
+        }
         return sb.toString();
     }
 
-    /** 给 UI 显示的综合诊断。 */
     static String diagnose(Context ctx) {
         StringBuilder sb = new StringBuilder();
-        sb.append("sdk=").append(Build.VERSION.SDK_INT);
-        sb.append(" target=").append(ctx == null ? "?" : ctx.getApplicationInfo().targetSdkVersion);
-        sb.append(" access=").append(hasAccess(ctx));
-        sb.append(" zen=").append(zen(ctx));
-        try {
-            NotificationManager nm = (NotificationManager) ctx.getSystemService(
-                    Context.NOTIFICATION_SERVICE);
-            if (nm != null) sb.append(" filter=").append(nm.getCurrentInterruptionFilter());
-        } catch (Throwable t) {
-            sb.append(" filter=ERR");
-        }
+        sb.append("状态：").append(describe(zen(ctx)));
+        sb.append(" · 权限：").append(hasAccess(ctx) ? "已授权" : "未授权");
         return sb.toString();
     }
 }

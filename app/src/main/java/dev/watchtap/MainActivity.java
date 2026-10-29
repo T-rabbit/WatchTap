@@ -34,6 +34,7 @@ public class MainActivity extends Activity {
     private TextView mDiag;
     private TextView mLogView;
     private Button mDndBtn;
+    private android.widget.Switch mMuteSwitch;
 
     private final Handler mHandler = new Handler(Looper.getMainLooper());
     private boolean mRunning = true;
@@ -96,6 +97,48 @@ public class MainActivity extends Activity {
         mSleepSub = new TextView(this);
         root.addView(card("生理睡眠检测", mSleepValue, mSleepSub));
 
+        // 同步静音开关（独立控制）
+        LinearLayout muteRow = new LinearLayout(this);
+        muteRow.setOrientation(LinearLayout.HORIZONTAL);
+        muteRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        muteRow.setBackgroundColor(0xFF1A1D24);
+        int mp = dp(14);
+        muteRow.setPadding(mp, mp, mp, mp);
+
+        LinearLayout muteTexts = new LinearLayout(this);
+        muteTexts.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams textLp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+
+        TextView muteTitle = new TextView(this);
+        muteTitle.setText("同步静音");
+        muteTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        muteTitle.setTextColor(Color.WHITE);
+
+        TextView muteDesc = new TextView(this);
+        muteDesc.setText("开启后勿扰会静音全部通知；关闭则允许优先通知");
+        muteDesc.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        muteDesc.setTextColor(0xFF6B7280);
+
+        muteTexts.addView(muteTitle);
+        muteTexts.addView(muteDesc);
+        muteRow.addView(muteTexts, textLp);
+
+        mMuteSwitch = new android.widget.Switch(this);
+        mMuteSwitch.setChecked(true);
+        mMuteSwitch.setOnCheckedChangeListener((btn, checked) -> {
+            saveMutePref(checked);
+        });
+        muteRow.addView(mMuteSwitch);
+
+        LinearLayout muteWrap = new LinearLayout(this);
+        muteWrap.setOrientation(LinearLayout.VERTICAL);
+        int mwp = dp(16);
+        muteWrap.setPadding(mwp, dp(2), mwp, dp(2));
+        muteWrap.addView(muteRow, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        root.addView(muteWrap);
+
         // 勿扰按钮
         mDndBtn = new Button(this);
         mDndBtn.setText("切换勿扰");
@@ -146,7 +189,7 @@ public class MainActivity extends Activity {
 
         // 日志正文
         mLogView = new TextView(this);
-        mLogView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
+        mLogView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
         mLogView.setTextColor(0xFF7DD3FC);
         mLogView.setTypeface(Typeface.MONOSPACE);
         mLogView.setLineSpacing(dp(2), 1f);
@@ -303,6 +346,14 @@ public class MainActivity extends Activity {
         }
         mSleepSub.setText(sl >= 0 ? ago(slTs) : "等待上报");
 
+        // ---- 同步静音开关 ----
+        boolean mute = b.getBoolean(StateStore.K_MUTE, true);
+        if (mMuteSwitch.isChecked() != mute) {
+            mMuteSwitch.setOnCheckedChangeListener(null);
+            mMuteSwitch.setChecked(mute);
+            mMuteSwitch.setOnCheckedChangeListener((btn, checked) -> saveMutePref(checked));
+        }
+
         // ---- 权限条 ----
         mPermBar.setVisibility(access ? View.GONE : View.VISIBLE);
 
@@ -362,6 +413,7 @@ public class MainActivity extends Activity {
         try {
             Bundle b = new Bundle();
             b.putBoolean("on", turnOn);
+            b.putBoolean("mute", mMuteSwitch.isChecked());
             Bundle r = getContentResolver().call(
                     StateStore.URI, StateStore.METHOD_TOGGLE_DND, null, b);
 
@@ -435,6 +487,18 @@ public class MainActivity extends Activity {
             toast("诊断失败：" + t.getClass().getSimpleName());
         }
         refresh();
+    }
+
+    /** 保存「同步静音」偏好。 */
+    private void saveMutePref(boolean mute) {
+        try {
+            Bundle b = new Bundle();
+            b.putBoolean(StateStore.K_MUTE, mute);
+            getContentResolver().call(StateStore.URI, StateStore.METHOD_PUT, null, b);
+            StateStore.logLocal(this, "同步静音：" + (mute ? "已开启" : "已关闭"));
+        } catch (Throwable t) {
+            toast("保存失败");
+        }
     }
 
     private void openDndSettings() {
