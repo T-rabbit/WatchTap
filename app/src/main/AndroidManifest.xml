@@ -26,5 +26,7 @@
             android:name=".StateStore"
             android:authorities="dev.watchtap.state"
             android:exported="true" />
+
+
     </application>
 </manifest>

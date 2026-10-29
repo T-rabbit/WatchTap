@@ -1,268 +1,152 @@
 package dev.watchtap;
 
-import android.app.AutomaticZenRule;
 import android.app.NotificationManager;
-import android.content.ComponentName;
 import android.content.Context;
-import android.net.Uri;
 import android.os.Build;
 import android.provider.Settings;
-import android.service.notification.ZenPolicy;
-
-import java.lang.reflect.Method;
 
 /**
- * 勿扰模式读写。
+ * 勿扰模式开关。
  *
- * ==== 为什么这么复杂 ====
- * HyperOS / MIUI 对第三方写全局勿扰限制很严。实测（诊断功能输出）：
+ * ==== 目标 ====
+ * 只要求「勿扰开启 / 关闭」，不实现「仅闹钟」这类静音策略。
  *
- *   [path1] NotificationManager.setZenMode(反射)  调用成功，但 zen_mode 不变
- *   [path2] INotificationManager.setZenMode       调用失败（抛异常）
- *   [path3] setInterruptionFilter                 调用失败（抛异常）
+ * ==== 为什么用 INTERRUPTION_FILTER_NONE ====
+ * 诊断实测：
+ *   setInterruptionFilter(5) → IllegalArgumentException: Invalid filter: 5
+ *   setInterruptionFilter(4) → 可用
  *
- * 也就是说系统**静默拦截**了反射写入。所以需要更多路径：
+ * setInterruptionFilter 的合法值只有 1(ALL) / 2(PRIORITY) / 4(NONE)。
+ * ALARMS(5) 只能用于 AutomaticZenRule 的 interruptionFilter，不能直接传。
  *
- *   path A  AutomaticZenRule（Android 官方推荐，无需 root）
- *           ZenPolicy 里 allowAlarms(true) 实现「仅闹钟」
- *   path B  root + settings put global zen_mode（最可靠，需要 su）
- *   path C  原有三条，作为兜底
+ * 所以：
+ *   开启勿扰 → FILTER_NONE(4)  → Settings.Global.zen_mode = 2
+ *   关闭勿扰 → FILTER_ALL (1)  → Settings.Global.zen_mode = 0
  *
- * 每次写入后用 Settings.Global.zen_mode 复核，以实际值为准。
+ * 注意：NONE 会连闹钟一起静音。这是「完全勿扰」的语义。
+ *
+ * ==== targetSdk 必须是 34 ====
+ * Android 15 起，targetSdk >= 35 时 setInterruptionFilter 会被系统转换成
+ * AutomaticZenRule（应用自己的规则），导致 zen_mode 不变。build.gradle 与
+ * build_apk.sh 里都固定 34。
  */
 final class Dnd {
 
     static final int ZEN_OFF = 0;
-    static final int ZEN_ALARMS = 3;
+    /** FILTER_NONE 对应的 zen_mode 值 */
+    static final int ZEN_ON = 2;
 
     static final int FILTER_ALL = 1;
-    static final int FILTER_ALARMS = 5;
-
-    private static final String AZR_ID = "dev.watchtap.sleepmode";
-    private static final String AZR_NAME = "WatchTap 睡眠模式";
-    private static final String REASON = "WatchTap Sync Watch";
+    /** NotificationManager.INTERRUPTION_FILTER_NONE */
+    static final int FILTER_NONE = 4;
 
     private Dnd() {}
 
     // ================================================================ 主入口
 
-    static boolean set(Context ctx, boolean on) {
-        return apply(ctx, on, false);
-    }
-
     /**
-     * @param probe true 时跳过「已是目标值」的短路，强制跑所有路径
+     * 开关勿扰。
+     *
+     * @return 以 zen_mode 实际变化为准
      */
-    static boolean apply(Context ctx, boolean on, boolean probe) {
+    static boolean set(Context ctx, boolean on) {
         if (ctx == null) {
             Logs.e("DND.set: no context", null);
             return false;
         }
 
-        int target = on ? ZEN_ALARMS : ZEN_OFF;
         int before = zen(ctx);
-
-        if (!probe && before == target) {
-            Logs.fire("DND.set", "already target zen=" + target);
+        boolean already = on ? (before > 0) : (before == 0);
+        if (already) {
+            Logs.fire("DND.set", "already " + (on ? "on" : "off") + " zen=" + before);
             return true;
         }
 
-        boolean ok = doApply(ctx, on, target);
-        int after = zen(ctx);
-        Logs.fire("DND.set", "target=" + target
+        // 路径 1：标准 API
+        String e1 = tryFilter(ctx, on);
+        int after = verify(ctx);
+        if (on ? after > 0 : after == 0) {
+            Logs.fire("DND.set", "target=" + (on ? "ON" : "OFF")
+                    + " before=" + before + " after=" + after + " via=filter [OK]");
+            return true;
+        }
+
+        // 路径 2：root 兜底
+        String e2 = tryRoot(ctx, on);
+        after = verify(ctx);
+        if (on ? after > 0 : after == 0) {
+            Logs.fire("DND.set", "target=" + (on ? "ON" : "OFF")
+                    + " before=" + before + " after=" + after + " via=root [OK]");
+            return true;
+        }
+
+        Logs.fire("DND.set", "target=" + (on ? "ON" : "OFF")
                 + " before=" + before + " after=" + after
-                + (ok ? " [OK]" : " [FAILED]"));
-        return ok;
-    }
-
-    private static boolean doApply(Context ctx, boolean on, int target) {
-        String err;
-
-        err = tryAzr(ctx, on);
-        if (zen(ctx) == target) {
-            Logs.fire("DND.win", "pathA AZR");
-            return true;
-        }
-        Logs.fire("DND.try", "pathA AZR -> " + (err == null ? "无效果" : err));
-
-        err = tryRoot(ctx, target);
-        if (zen(ctx) == target) {
-            Logs.fire("DND.win", "pathB root");
-            return true;
-        }
-        Logs.fire("DND.try", "pathB root -> " + (err == null ? "无效果" : err));
-
-        err = tryManagerSetZenMode(ctx, target);
-        if (zen(ctx) == target) {
-            Logs.fire("DND.win", "pathC1");
-            return true;
-        }
-        Logs.fire("DND.try", "pathC1 -> " + (err == null ? "无效果" : err));
-
-        err = tryServiceSetZenMode(ctx, target);
-        if (zen(ctx) == target) {
-            Logs.fire("DND.win", "pathC2");
-            return true;
-        }
-        Logs.fire("DND.try", "pathC2 -> " + (err == null ? "无效果" : err));
-
-        err = tryFilter(ctx, on);
-        if (zen(ctx) == target) {
-            Logs.fire("DND.win", "pathC3");
-            return true;
-        }
-        Logs.fire("DND.try", "pathC3 -> " + (err == null ? "无效果" : err));
-
+                + " filter=" + (e1 == null ? "ok-no-effect" : e1)
+                + " root=" + (e2 == null ? "ok-no-effect" : e2)
+                + " [FAILED]");
         return false;
     }
 
-    // ================================================================ path A
+    // ================================================================ 路径
 
-    /**
-     * AutomaticZenRule 路径。
-     *
-     * 这是 Android 5.0+ 官方给第三方应用的勿扰接入方式。
-     * 规则挂在应用自己名下，但生效后会影响全局 zen_mode。
-     *
-     * 通过 ZenPolicy 精确表达「只允许闹钟」：
-     *   disallowAllSounds()      先全禁
-     *   allowAlarms(true)        再放行闹钟
-     */
-    /** 返回 null 表示成功，非 null 为失败原因。 */
-    private static String tryAzr(Context ctx, boolean on) {
-        try {
-            NotificationManager nm = (NotificationManager) ctx.getSystemService(
-                    Context.NOTIFICATION_SERVICE);
-            if (nm == null) return "NotificationManager null";
-
-            ComponentName owner = new ComponentName(ctx, MainActivity.class);
-
-            if (!on) {
-                // 关闭：把自己创建的规则删掉
-                nm.removeAutomaticZenRule(AZR_ID);
-                Logs.fire("DND.pathA", "removeAutomaticZenRule");
-                return null;
-            }
-
-            ZenPolicy policy = new ZenPolicy.Builder()
-                    .disallowAllSounds()
-                    .allowAlarms(true)
-                    .showAllVisualEffects()
-                    .build();
-
-            AutomaticZenRule rule = new AutomaticZenRule.Builder(
-                    AZR_NAME, Uri.parse("condition://watchtap/sleep"))
-                    .setOwner(owner)
-                    .setInterruptionFilter(FILTER_ALARMS)
-                    .setZenPolicy(policy)
-                    .setEnabled(true)
-                    .setManualInvocationAllowed(true)
-                    .build();
-
-            // 已存在则 update，否则 add
-            try {
-                nm.updateAutomaticZenRule(AZR_ID, rule);
-                Logs.fire("DND.pathA", "updateAutomaticZenRule");
-                return null;
-            } catch (Throwable ignored) {
-            }
-
-            String id = nm.addAutomaticZenRule(rule);
-            Logs.fire("DND.pathA", "addAutomaticZenRule id=" + id);
-            return id != null ? null : "addAutomaticZenRule returned null";
-        } catch (Throwable t) {
-            Logs.w("DND.pathA failed", t);
-            return Logs.describe(t);
-        }
-    }
-
-    // ================================================================ path B
-
-    /**
-     * root 兜底：su -c "settings put global zen_mode N"
-     *
-     * 最可靠，但需要 root。设备已装 KernelSU，可用。
-     */
-    private static String tryRoot(Context ctx, int target) {
-        try {
-            Process p = Runtime.getRuntime().exec(
-                    new String[]{"su", "-c", "settings put global zen_mode " + target});
-            int rc = p.waitFor();
-            Logs.fire("DND.pathB", "su settings put zen_mode=" + target + " rc=" + rc);
-            return rc == 0 ? null : "exit code " + rc + " (无 root?)";
-        } catch (Throwable t) {
-            Logs.w("DND.pathB failed (no root?)", t);
-            return Logs.describe(t);
-        }
-    }
-
-    // ================================================================ path C
-
-    private static String tryManagerSetZenMode(Context ctx, int mode) {
-        try {
-            NotificationManager nm = (NotificationManager) ctx.getSystemService(
-                    Context.NOTIFICATION_SERVICE);
-            if (nm == null) return "NotificationManager null";
-            Method m = NotificationManager.class.getDeclaredMethod(
-                    "setZenMode", int.class, Uri.class, String.class);
-            m.setAccessible(true);
-            m.invoke(nm, mode, null, REASON);
-            Logs.fire("DND.pathC1", "setZenMode(" + mode + ") invoked");
-            return null;
-        } catch (Throwable t) {
-            Logs.w("DND.pathC1 failed", t);
-            return Logs.describe(t);
-        }
-    }
-
-    private static String tryServiceSetZenMode(Context ctx, int mode) {
-        try {
-            Object svc = ctx.getSystemService("notification");
-            if (svc == null) return "notification service null";
-
-            Object binder = null;
-            for (String fname : new String[]{"sService", "sNotificationManager", "service"}) {
-                try {
-                    java.lang.reflect.Field f = svc.getClass().getDeclaredField(fname);
-                    f.setAccessible(true);
-                    Object v = java.lang.reflect.Modifier.isStatic(f.getModifiers())
-                            ? f.get(null) : f.get(svc);
-                    if (v != null) {
-                        binder = v;
-                        break;
-                    }
-                } catch (Throwable ignored) {
-                }
-            }
-            if (binder == null) {
-                return "INotificationManager binder not found (字段名不匹配)";
-            }
-
-            Method setZen = binder.getClass().getMethod("setZenMode",
-                    String.class, int.class, Uri.class, String.class);
-            setZen.setAccessible(true);
-            setZen.invoke(binder, ctx.getPackageName(), mode, null, REASON);
-            Logs.fire("DND.pathC2", "INM.setZenMode(" + mode + ") invoked");
-            return null;
-        } catch (Throwable t) {
-            Logs.w("DND.pathC2 failed", t);
-            return Logs.describe(t);
-        }
-    }
-
+    /** 标准 API。合法值只有 1/2/4。 */
     private static String tryFilter(Context ctx, boolean on) {
         try {
             NotificationManager nm = (NotificationManager) ctx.getSystemService(
                     Context.NOTIFICATION_SERVICE);
             if (nm == null) return "NotificationManager null";
-            int filter = on ? FILTER_ALARMS : FILTER_ALL;
+
+            int filter = on ? FILTER_NONE : FILTER_ALL;
             nm.setInterruptionFilter(filter);
-            Logs.fire("DND.pathC3", "setInterruptionFilter(" + filter + ") invoked");
+            Logs.fire("DND.filter", "setInterruptionFilter(" + filter + ")");
             return null;
+        } catch (SecurityException se) {
+            Logs.e("DND.filter: 无勿扰权限", se);
+            return Logs.describe(se);
         } catch (Throwable t) {
-            Logs.w("DND.pathC3 failed", t);
+            Logs.w("DND.filter failed", t);
             return Logs.describe(t);
         }
+    }
+
+    /**
+     * root 兜底：settings put + cmd notification。
+     *
+     * settings put 只改数据库，NMS 内存态不会立刻跟；cmd 会让它重载。
+     */
+    private static String tryRoot(Context ctx, boolean on) {
+        String[][] cmds = {
+                {"settings", "put", "global", "zen_mode", String.valueOf(on ? ZEN_ON : ZEN_OFF)},
+                {"cmd", "notification", "--zen", on ? "none" : "off"},
+        };
+
+        StringBuilder log = new StringBuilder();
+        boolean anyOk = false;
+
+        for (String[] c : cmds) {
+            String cmd = join(c);
+            try {
+                Process p = Runtime.getRuntime().exec(new String[]{"su", "-c", cmd});
+                int rc = p.waitFor();
+                log.append(cmd).append(" rc=").append(rc).append("; ");
+                if (rc == 0) anyOk = true;
+            } catch (Throwable t) {
+                log.append(cmd).append(" ERR=").append(Logs.describe(t)).append("; ");
+            }
+        }
+
+        Logs.fire("DND.root", log.toString());
+        return anyOk ? null : log.toString();
+    }
+
+    private static String join(String[] a) {
+        StringBuilder sb = new StringBuilder();
+        for (String s : a) {
+            if (sb.length() > 0) sb.append(' ');
+            sb.append(s);
+        }
+        return sb.toString();
     }
 
     // ================================================================ 读取
@@ -276,6 +160,26 @@ final class Dnd {
         }
     }
 
+    /**
+     * 写入后复核。
+     *
+     * Settings.Global.getInt 走进程内缓存，别的进程刚改的值可能读不到，
+     * 所以等一下再读两次确认。
+     */
+    private static int verify(Context ctx) {
+        try {
+            Thread.sleep(150L);
+        } catch (InterruptedException ignored) {
+        }
+        int a = zen(ctx);
+        try {
+            Thread.sleep(100L);
+        } catch (InterruptedException ignored) {
+        }
+        int b = zen(ctx);
+        return b;
+    }
+
     static boolean hasAccess(Context ctx) {
         if (ctx == null) return false;
         try {
@@ -287,82 +191,41 @@ final class Dnd {
         }
     }
 
-    /** 是否有 root。 */
-    static boolean hasRoot() {
-        try {
-            Process p = Runtime.getRuntime().exec(new String[]{"su", "-c", "id"});
-            java.io.BufferedReader r = new java.io.BufferedReader(
-                    new java.io.InputStreamReader(p.getInputStream()));
-            String line = r.readLine();
-            p.waitFor();
-            return line != null && line.contains("uid=0");
-        } catch (Throwable t) {
-            return false;
-        }
-    }
-
     // ================================================================ 诊断
 
-    /**
-     * 逐条测试所有写入路径，返回详细报告。
-     *
-     * 每条都记录：调用是否抛异常 + 异常内容 + 调用后 zen_mode 实际值。
-     */
+    /** 诊断：测试两条路径，返回详细报告。 */
     static String probe(Context ctx) {
         StringBuilder sb = new StringBuilder();
         if (ctx == null) return "no context";
 
-        int start = zen(ctx);
-        sb.append("初始 zen=").append(start).append('\n');
+        int before = zen(ctx);
+        sb.append("初始 zen=").append(before).append('\n');
         sb.append("权限 access=").append(hasAccess(ctx)).append('\n');
-        sb.append("root=").append(hasRoot()).append('\n');
         sb.append("sdk=").append(Build.VERSION.SDK_INT)
                 .append(" target=").append(ctx.getApplicationInfo().targetSdkVersion).append('\n');
 
-        int target = start == ZEN_OFF ? ZEN_ALARMS : ZEN_OFF;
-        sb.append("目标 zen=").append(target).append("\n\n");
+        boolean turnOn = before == 0;
+        sb.append("目标=").append(turnOn ? "开启勿扰" : "关闭勿扰").append("\n\n");
 
-        boolean turningOn = target == ZEN_ALARMS;
-
-        String e;
-
-        sb.append("[A] AutomaticZenRule + ZenPolicy(allowAlarms)\n");
-        e = tryAzr(ctx, turningOn);
-        sb.append("    ").append(e == null ? "调用成功" : "失败: " + e)
-                .append(" → zen=").append(zen(ctx));
-        if (zen(ctx) == target) return sb.append("  ✓\n").toString();
+        sb.append("[1] setInterruptionFilter(").append(turnOn ? FILTER_NONE : FILTER_ALL)
+                .append(")\n");
+        String e1 = tryFilter(ctx, turnOn);
+        int a1 = verify(ctx);
+        sb.append("    ").append(e1 == null ? "调用成功" : "失败: " + e1)
+                .append(" → zen=").append(a1);
+        if (turnOn ? a1 > 0 : a1 == 0) return sb.append("  ✓\n").toString();
         sb.append("  ✗\n\n");
 
-        sb.append("[B] root: settings put global zen_mode\n");
-        e = tryRoot(ctx, target);
-        sb.append("    ").append(e == null ? "调用成功" : "失败: " + e)
-                .append(" → zen=").append(zen(ctx));
-        if (zen(ctx) == target) return sb.append("  ✓\n").toString();
+        sb.append("[2] root: settings put + cmd notification\n");
+        String e2 = tryRoot(ctx, turnOn);
+        int a2 = verify(ctx);
+        sb.append("    ").append(e2 == null ? "调用成功" : "失败: " + e2)
+                .append(" → zen=").append(a2);
+        if (turnOn ? a2 > 0 : a2 == 0) return sb.append("  ✓\n").toString();
         sb.append("  ✗\n\n");
 
-        sb.append("[C1] NotificationManager.setZenMode(反射)\n");
-        e = tryManagerSetZenMode(ctx, target);
-        sb.append("    ").append(e == null ? "调用成功" : "失败: " + e)
-                .append(" → zen=").append(zen(ctx));
-        if (zen(ctx) == target) return sb.append("  ✓\n").toString();
-        sb.append("  ✗\n\n");
-
-        sb.append("[C2] INotificationManager.setZenMode\n");
-        e = tryServiceSetZenMode(ctx, target);
-        sb.append("    ").append(e == null ? "调用成功" : "失败: " + e)
-                .append(" → zen=").append(zen(ctx));
-        if (zen(ctx) == target) return sb.append("  ✓\n").toString();
-        sb.append("  ✗\n\n");
-
-        sb.append("[C3] setInterruptionFilter\n");
-        e = tryFilter(ctx, turningOn);
-        sb.append("    ").append(e == null ? "调用成功" : "失败: " + e)
-                .append(" → zen=").append(zen(ctx));
-        if (zen(ctx) == target) return sb.append("  ✓\n").toString();
-        sb.append("  ✗\n\n");
-
-        sb.append("✗ 全部失败\n");
-        sb.append("详细异常见日志（UI 底部或 watchtap.log）");
+        sb.append("✗ 两条路径均失败\n");
+        sb.append("详细异常见日志");
         return sb.toString();
     }
 

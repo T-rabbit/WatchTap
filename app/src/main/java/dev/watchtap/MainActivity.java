@@ -273,15 +273,11 @@ public class MainActivity extends Activity {
 
         // ---- 勿扰 ----
         if (zen == 0) {
-            mDndValue.setText("关闭");
+            mDndValue.setText("已关闭");
             mDndValue.setTextColor(0xFF9CA3AF);
             mDndSub.setText("通知正常接收");
-        } else if (zen == 3) {
-            mDndValue.setText("仅闹钟");
-            mDndValue.setTextColor(0xFFF59E0B);
-            mDndSub.setText(ago(zenTs) + " · 闹钟仍会响");
         } else if (zen > 0) {
-            mDndValue.setText("开启 (" + zen + ")");
+            mDndValue.setText("已开启");
             mDndValue.setTextColor(0xFFF59E0B);
             mDndSub.setText(ago(zenTs));
         } else {
@@ -367,7 +363,7 @@ public class MainActivity extends Activity {
             int after = r == null ? -1 : r.getInt("zen", -1);
 
             if (ok) {
-                toast(turnOn ? "已开启勿扰（仅闹钟）" : "已关闭勿扰");
+                toast(turnOn ? "已开启勿扰" : "已关闭勿扰");
             } else if (!access) {
                 toast("需要勿扰权限，正在跳转…");
                 StateStore.logLocal(this, "UI.toggleDnd 失败：无权限");
