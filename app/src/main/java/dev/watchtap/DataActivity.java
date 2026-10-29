@@ -123,6 +123,11 @@ public class DataActivity extends Activity {
         deep.setMinimumHeight(0);
         deep.setPadding(dp(10), dp(5), dp(10), dp(5));
         deep.setOnClickListener(v -> runDeep());
+        // 长按探测按钮 = 转储 Health Connect 表结构
+        deep.setOnLongClickListener(v -> {
+            runHcDump();
+            return true;
+        });
         LinearLayout.LayoutParams dlp2 = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         dlp2.rightMargin = dp(6);
@@ -375,6 +380,20 @@ public class DataActivity extends Activity {
         }
 
         return box;
+    }
+
+    /** 转储 Health Connect 的表结构。 */
+    private void runHcDump() {
+        StateStore.logLocal(this, "转储 Health Connect 结构");
+        try {
+            android.os.Bundle r = getContentResolver().call(
+                    StateStore.URI, StateStore.METHOD_HC_DUMP, null, null);
+            String raw = r == null ? "无返回" : r.getString("report", "");
+            if (raw == null || raw.isEmpty()) raw = "空报告";
+            showReport("Health Connect 结构", raw);
+        } catch (Throwable t) {
+            StateStore.logLocal(this, "转储失败：" + t);
+        }
     }
 
     /** 深度探测数据存储位置。 */

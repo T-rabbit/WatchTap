@@ -44,6 +44,8 @@ public class StateStore extends ContentProvider {
     public static final String METHOD_LSPOSED = "lsposed";
     /** 深度探测：数据到底存在哪 */
     public static final String METHOD_DEEP = "deep";
+    /** 转储 Health Connect 表结构 */
+    public static final String METHOD_HC_DUMP = "hcDump";
 
     // ---- 状态键 ----
     public static final String K_SLEEP_STATE = "sleepState";
@@ -108,7 +110,7 @@ public class StateStore extends ContentProvider {
             public void run() {
                 try {
                     if (Root.available()) {
-                        String r = DbProbe.collect(getContext());
+                        String r = doCollect();
                         Logs.fire("自动采集", r.split("\n")[0]);
                     }
                 } catch (Throwable t) {
@@ -117,6 +119,33 @@ public class StateStore extends ContentProvider {
                 h.postDelayed(this, 5 * 60 * 1000L);
             }
         }, 8000L);
+    }
+
+    /**
+     * 采集数据：优先 Health Connect，失败再退回 OPPO 数据库。
+     *
+     * Health Connect 是 Android 官方健康数据中枢，OPPO 健康会往里同步，
+     * 格式标准，比猜 OPPO 的私有结构可靠得多。
+     */
+    String doCollect() {
+        StringBuilder sb = new StringBuilder();
+
+        if (HealthConnect.available()) {
+            sb.append("【数据源：Health Connect】\n");
+            String r = HealthConnect.collect(getContext());
+            sb.append(r).append('\n');
+            // 成功就不要走下面的兜底了
+            if (r.startsWith("写入") && !r.startsWith("写入 0")) {
+                return sb.toString();
+            }
+            sb.append("Health Connect 没读到数据，尝试 OPPO 数据库\n\n");
+        } else {
+            sb.append("Health Connect 不可用（数据库不存在或 root 失效）\n\n");
+        }
+
+        sb.append("【数据源：OPPO 健康数据库】\n");
+        sb.append(DbProbe.collect(getContext()));
+        return sb.toString();
     }
 
     private SharedPreferences pref() {
@@ -218,7 +247,13 @@ public class StateStore extends ContentProvider {
 
         if (METHOD_COLLECT.equals(method)) {
             Bundle r = new Bundle();
-            r.putString("report", DbProbe.collect(getContext()));
+            r.putString("report", doCollect());
+            return r;
+        }
+
+        if (METHOD_HC_DUMP.equals(method)) {
+            Bundle r = new Bundle();
+            r.putString("report", HealthConnect.dumpSchema(getContext()));
             return r;
         }
 
