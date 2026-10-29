@@ -25,7 +25,7 @@ OUT="$ROOT/build"
 APP=app/src/main
 PKG="dev.zenlink"
 MIN_SDK=31
-TARGET_SDK=36
+TARGET_SDK="${TARGET_SDK:-34}"
 
 rm -rf "$OUT"
 mkdir -p "$OUT/res" "$OUT/classes" "$OUT/dex" "$OUT/gen"
@@ -39,7 +39,7 @@ echo "==> 1/7 生成 R.java + 编译资源 (aapt2)"
   --java "$OUT/gen" \
   --min-sdk-version "$MIN_SDK" \
   --target-sdk-version "$TARGET_SDK" \
-  --version-code 2 --version-name "2.0.0" \
+  --version-code 3 --version-name "2.1.0" \
   "$OUT/res.zip"
 echo "    base.apk 已生成（含 resources.arsc）"
 

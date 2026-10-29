@@ -20,29 +20,27 @@ import java.util.Date;
 import java.util.Locale;
 
 /**
- * WatchTap 界面：实时显示手表状态，并提供勿扰手动开关。
+ * WatchTap 界面。
  *
- * 数据来源：StateStore（ContentProvider），由 hook 进程写入。
- * 刷新频率：1 秒。
+ * 三个状态卡片 + 勿扰开关 + 操作日志。
+ * 数据由 hook 进程写入 StateStore，本界面每秒读取一次。
  */
 public class MainActivity extends Activity {
 
-    // ---- 卡片 ----
-    private TextView mHrValue, mHrSub;
     private TextView mSleepModeValue, mSleepModeSub;
     private TextView mDndValue, mDndSub;
     private TextView mSleepValue, mSleepSub;
-    private TextView mDiag;
     private TextView mPermBar;
+    private TextView mDiag;
+    private TextView mLogView;
     private Button mDndBtn;
 
     private final Handler mHandler = new Handler(Looper.getMainLooper());
     private boolean mRunning = true;
+    private int mDp;
 
     private final SimpleDateFormat mFmt =
             new SimpleDateFormat("HH:mm:ss", Locale.US);
-
-    private int mDp;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -69,66 +67,108 @@ public class MainActivity extends Activity {
         subtitle.setText("手表状态监控 · 每秒刷新");
         subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         subtitle.setTextColor(0xFF8B94A3);
-        root.addView(subtitle, lp(pad, 0, pad, dp(16)));
+        root.addView(subtitle, lp(pad, 0, pad, dp(14)));
 
-        // ---- 权限提示条（未授权时才显示）----
+        // 权限提示条
         mPermBar = new TextView(this);
         mPermBar.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         mPermBar.setTextColor(Color.WHITE);
         mPermBar.setBackgroundColor(0xFFDC2626);
         int pp = dp(12);
         mPermBar.setPadding(pp, pp, pp, pp);
-        mPermBar.setText("⚠ 未授予勿扰权限，无法自动切换。点此授权 →");
+        mPermBar.setText("⚠ 未授予勿扰权限，点此授权 →");
         mPermBar.setOnClickListener(v -> openDndSettings());
         mPermBar.setVisibility(View.GONE);
         root.addView(mPermBar, lp(pad, 0, pad, dp(12)));
 
-        // ---- 卡片 1: 心率 ----
-        mHrValue = new TextView(this);
-        mHrSub = new TextView(this);
-        root.addView(card("心率", "bpm", mHrValue, mHrSub));
-
-        // ---- 卡片 2: 手表睡眠模式 ----
+        // 卡片 1: 手表睡眠模式
         mSleepModeValue = new TextView(this);
         mSleepModeSub = new TextView(this);
-        root.addView(card("手表睡眠模式", "", mSleepModeValue, mSleepModeSub));
+        root.addView(card("手表睡眠模式", mSleepModeValue, mSleepModeSub));
 
-        // ---- 卡片 3: 勿扰模式 ----
+        // 卡片 2: 手机勿扰
         mDndValue = new TextView(this);
         mDndSub = new TextView(this);
-        root.addView(card("手机勿扰模式", "", mDndValue, mDndSub));
+        root.addView(card("手机勿扰模式", mDndValue, mDndSub));
 
-        // ---- 卡片 4: 生理睡眠检测 ----
+        // 卡片 3: 生理睡眠
         mSleepValue = new TextView(this);
         mSleepSub = new TextView(this);
-        root.addView(card("生理睡眠检测", "", mSleepValue, mSleepSub));
+        root.addView(card("生理睡眠检测", mSleepValue, mSleepSub));
 
-        // ---- 勿扰开关 ----
+        // 勿扰按钮
         mDndBtn = new Button(this);
         mDndBtn.setText("切换勿扰");
-        styleButton(mDndBtn);
+        mDndBtn.setAllCaps(false);
+        mDndBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        mDndBtn.setTextColor(Color.WHITE);
+        mDndBtn.setBackgroundColor(0xFF2563EB);
         mDndBtn.setOnClickListener(v -> toggleDnd());
-        root.addView(mDndBtn, lp(pad, dp(8), pad, dp(8)));
+        root.addView(mDndBtn, lp(pad, dp(8), pad, dp(4)));
 
-        // ---- 诊断信息 ----
+        // 诊断按钮：逐条测试勿扰写入路径
+        Button probe = new Button(this);
+        probe.setText("诊断勿扰写入");
+        probe.setAllCaps(false);
+        probe.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        probe.setTextColor(0xFFCBD5E1);
+        probe.setBackgroundColor(0xFF7C2D12);
+        probe.setOnClickListener(v -> runProbe());
+        root.addView(probe, lp(pad, dp(4), pad, dp(4)));
+
+        // 刷新按钮
+        Button refresh = new Button(this);
+        refresh.setText("刷新状态");
+        refresh.setAllCaps(false);
+        refresh.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        refresh.setTextColor(0xFFCBD5E1);
+        refresh.setBackgroundColor(0xFF1E293B);
+        refresh.setOnClickListener(v -> {
+            StateStore.logLocal(this, "UI.refresh 手动刷新");
+            refresh();
+        });
+        root.addView(refresh, lp(pad, dp(4), pad, dp(14)));
+
+        // 诊断
         mDiag = new TextView(this);
         mDiag.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
         mDiag.setTextColor(0xFF6B7280);
         mDiag.setLineSpacing(dp(3), 1f);
         mDiag.setText("读取中…");
-        root.addView(mDiag, lp(pad, dp(16), pad, dp(8)));
+        root.addView(mDiag, lp(pad, dp(8), pad, dp(12)));
+
+        // 日志标题
+        TextView logTitle = new TextView(this);
+        logTitle.setText("操作日志（最近 60 条）");
+        logTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        logTitle.setTextColor(0xFF8B94A3);
+        root.addView(logTitle, lp(pad, dp(8), pad, dp(6)));
+
+        // 日志正文
+        mLogView = new TextView(this);
+        mLogView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
+        mLogView.setTextColor(0xFF7DD3FC);
+        mLogView.setTypeface(Typeface.MONOSPACE);
+        mLogView.setLineSpacing(dp(2), 1f);
+        mLogView.setTextIsSelectable(true);
+        mLogView.setBackgroundColor(0xFF111827);
+        int lpad = dp(10);
+        mLogView.setPadding(lpad, lpad, lpad, lpad);
+        mLogView.setText("等待日志…");
+        root.addView(mLogView, lp(pad, 0, pad, dp(16)));
 
         scroll.addView(root, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         setContentView(scroll);
 
         applyInsets(scroll);
+        StateStore.logLocal(this, "UI.onCreate 界面启动");
         tick();
     }
 
     // ------------------------------------------------------------ UI 构建
 
-    private LinearLayout card(String name, String unit, TextView value, TextView sub) {
+    private LinearLayout card(String name, TextView value, TextView sub) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setBackgroundColor(0xFF1A1D24);
@@ -141,24 +181,11 @@ public class MainActivity extends Activity {
         label.setTextColor(0xFF8B94A3);
         box.addView(label);
 
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
-
         value.setText("--");
-        value.setTextSize(TypedValue.COMPLEX_UNIT_SP, 32);
+        value.setTextSize(TypedValue.COMPLEX_UNIT_SP, 30);
         value.setTextColor(Color.WHITE);
         value.setTypeface(Typeface.DEFAULT_BOLD);
-        row.addView(value);
-
-        if (!unit.isEmpty()) {
-            TextView u = new TextView(this);
-            u.setText(" " + unit);
-            u.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-            u.setTextColor(0xFF6B7280);
-            row.addView(u);
-        }
-        box.addView(row);
+        box.addView(value);
 
         sub.setText("等待数据");
         sub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
@@ -172,13 +199,6 @@ public class MainActivity extends Activity {
         wrap.addView(box, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         return wrap;
-    }
-
-    private void styleButton(Button b) {
-        b.setAllCaps(false);
-        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        b.setTextColor(Color.WHITE);
-        b.setBackgroundColor(0xFF2563EB);
     }
 
     private LinearLayout.LayoutParams lp(int l, int t, int r, int btm) {
@@ -212,14 +232,13 @@ public class MainActivity extends Activity {
     private void refresh() {
         Bundle b = read();
         if (b == null) {
-            mDiag.setText("跨进程通道不可用：ContentProvider(" + StateStore.AUTHORITY + ")");
+            mDiag.setText("跨进程通道不可用：" + StateStore.AUTHORITY);
             return;
         }
 
-        int hr = b.getInt(StateStore.K_HR, -1);
-        long hrTs = b.getLong(StateStore.K_HR_TS, 0);
         int sm = b.getInt(StateStore.K_SLEEP_MODE, -1);
         long smTs = b.getLong(StateStore.K_SLEEP_MODE_TS, 0);
+        long smAt = b.getLong(StateStore.K_SLEEP_MODE_AT, 0);
         int zen = b.getInt(StateStore.K_ZEN, -1);
         long zenTs = b.getLong(StateStore.K_ZEN_TS, 0);
         int sl = b.getInt(StateStore.K_SLEEP_STATE, -1);
@@ -227,12 +246,10 @@ public class MainActivity extends Activity {
         long updated = b.getLong(StateStore.K_UPDATED, 0);
         String counts = b.getString(StateStore.K_COUNTS, "");
         String last = b.getString(StateStore.K_LAST_MSG, "");
+        String logs = b.getString("logs", "");
+        boolean access = b.getBoolean("dndAccess", false);
 
-        // 心率
-        mHrValue.setText(hr > 0 ? String.valueOf(hr) : "--");
-        mHrSub.setText(hr > 0 ? ago(hrTs) : "等待心率数据");
-
-        // 手表睡眠模式
+        // ---- 手表睡眠模式 ----
         if (sm == 1) {
             mSleepModeValue.setText("已开启");
             mSleepModeValue.setTextColor(0xFF60A5FA);
@@ -240,12 +257,21 @@ public class MainActivity extends Activity {
             mSleepModeValue.setText("已关闭");
             mSleepModeValue.setTextColor(0xFF9CA3AF);
         } else {
-            mSleepModeValue.setText("--");
+            mSleepModeValue.setText("未收到");
             mSleepModeValue.setTextColor(0xFF9CA3AF);
         }
-        mSleepModeSub.setText(sm >= 0 ? ago(smTs) : "等待手表上报");
+        // 明确区分「当前」和「上次记录」
+        if (sm >= 0 && smAt > 0) {
+            String when = ago(smAt);
+            boolean stale = System.currentTimeMillis() - smAt > 5 * 60 * 1000;
+            mSleepModeSub.setText((stale ? "上次记录：" : "更新：") + when);
+            mSleepModeSub.setTextColor(stale ? 0xFFF59E0B : 0xFF6B7280);
+        } else {
+            mSleepModeSub.setText("等待手表上报");
+            mSleepModeSub.setTextColor(0xFF6B7280);
+        }
 
-        // 勿扰
+        // ---- 勿扰 ----
         if (zen == 0) {
             mDndValue.setText("关闭");
             mDndValue.setTextColor(0xFF9CA3AF);
@@ -263,7 +289,7 @@ public class MainActivity extends Activity {
             mDndSub.setText("读取失败");
         }
 
-        // 生理睡眠
+        // ---- 生理睡眠 ----
         if (sl == 1) {
             mSleepValue.setText("睡眠中");
             mSleepValue.setTextColor(0xFF818CF8);
@@ -276,27 +302,30 @@ public class MainActivity extends Activity {
         }
         mSleepSub.setText(sl >= 0 ? ago(slTs) : "等待上报");
 
-        // 权限提示条
-        boolean hasPerm = Dnd.hasAccess(this);
-        mPermBar.setVisibility(hasPerm ? View.GONE : View.VISIBLE);
+        // ---- 权限条 ----
+        mPermBar.setVisibility(access ? View.GONE : View.VISIBLE);
 
-        // 诊断
+        // ---- 诊断 ----
         StringBuilder sb = new StringBuilder();
-        sb.append("勿扰权限：").append(hasPerm ? "已授权" : "未授权")
-                .append("（未授权时无法切换）\n");
+        sb.append("勿扰权限：").append(access ? "已授权" : "未授权")
+                .append(" · ").append(Dnd.diagnose(this)).append('\n');
         sb.append("模块最后更新：").append(updated > 0 ? ago(updated) : "-").append('\n');
         if (!counts.isEmpty()) {
             String[] c = counts.split("/");
-            if (c.length == 3) {
-                sb.append("累计：心率 ").append(c[0])
-                        .append(" · 生理 ").append(c[1])
-                        .append(" · 睡眠模式 ").append(c[2]).append('\n');
+            if (c.length == 2) {
+                sb.append("累计：生理 ").append(c[0])
+                        .append(" · 睡眠模式 ").append(c[1]).append('\n');
             }
         }
         if (!last.isEmpty()) {
             sb.append("最近消息：").append(last);
         }
         mDiag.setText(sb.toString());
+
+        // ---- 日志 ----
+        if (!logs.isEmpty()) {
+            mLogView.setText(logs);
+        }
     }
 
     private Bundle read() {
@@ -311,36 +340,72 @@ public class MainActivity extends Activity {
         if (ts <= 0) return "未知";
         long d = System.currentTimeMillis() - ts;
         if (d < 0) d = 0;
-        if (d < 5000) return "刚刚 · " + mFmt.format(new Date(ts));
-        if (d < 60000) return (d / 1000) + " 秒前 · " + mFmt.format(new Date(ts));
-        if (d < 3600000) return (d / 60000) + " 分钟前 · " + mFmt.format(new Date(ts));
-        return (d / 3600000) + " 小时前 · " + mFmt.format(new Date(ts));
+        String clock = mFmt.format(new Date(ts));
+        if (d < 5000) return "刚刚 · " + clock;
+        if (d < 60000) return (d / 1000) + " 秒前 · " + clock;
+        if (d < 3600000) return (d / 60000) + " 分钟前 · " + clock;
+        return (d / 3600000) + " 小时前 · " + clock;
     }
 
-    // ------------------------------------------------------------ 勿扰开关
+    // ------------------------------------------------------------ 勿扰
 
     private void toggleDnd() {
         Bundle cur = read();
         int zen = cur == null ? 0 : cur.getInt(StateStore.K_ZEN, 0);
         boolean turnOn = zen == 0;
 
+        StateStore.logLocal(this, "UI.toggleDnd 点击 req=" + turnOn);
+
         try {
             Bundle b = new Bundle();
             b.putBoolean("on", turnOn);
             Bundle r = getContentResolver().call(
                     StateStore.URI, StateStore.METHOD_TOGGLE_DND, null, b);
+
             boolean ok = r != null && r.getBoolean("ok", false);
+            boolean access = r != null && r.getBoolean("access", false);
+            int after = r == null ? -1 : r.getInt("zen", -1);
 
             if (ok) {
                 toast(turnOn ? "已开启勿扰（仅闹钟）" : "已关闭勿扰");
-            } else if (!Dnd.hasAccess(this)) {
-                toast("需要授予勿扰权限");
+            } else if (!access) {
+                toast("需要勿扰权限，正在跳转…");
+                StateStore.logLocal(this, "UI.toggleDnd 失败：无权限");
                 openDndSettings();
             } else {
-                toast("切换失败");
+                toast("切换失败（zen=" + after + "），详见日志");
+                StateStore.logLocal(this, "UI.toggleDnd 失败 zen=" + after);
             }
         } catch (Throwable t) {
-            toast("切换失败：" + t.getClass().getSimpleName());
+            toast("切换异常：" + t.getClass().getSimpleName());
+            StateStore.logLocal(this, "UI.toggleDnd 异常 " + t);
+        }
+        refresh();
+    }
+
+    /**
+     * 逐条测试勿扰写入路径，把结果打到 UI 和日志。
+     *
+     * 用途：一次定位「哪条路径能真正改 zen_mode」，
+     * 避免在没有设备时靠猜。
+     */
+    private void runProbe() {
+        StateStore.logLocal(this, "UI.probe 开始诊断勿扰写入");
+        try {
+            Bundle r = getContentResolver().call(
+                    StateStore.URI, StateStore.METHOD_PROBE_DND, null, null);
+            String report = r == null ? "无返回" : r.getString("report", "");
+            if (report.isEmpty()) report = "空报告";
+
+            StateStore.logLocal(this, "UI.probe 结果:\n" + report);
+            new android.app.AlertDialog.Builder(this)
+                    .setTitle("勿扰写入诊断")
+                    .setMessage(report)
+                    .setPositiveButton("知道了", null)
+                    .show();
+        } catch (Throwable t) {
+            StateStore.logLocal(this, "UI.probe 异常 " + t);
+            toast("诊断失败：" + t.getClass().getSimpleName());
         }
         refresh();
     }
