@@ -53,10 +53,19 @@ final class State {
     // ---------------------------------------------------------------- 写入
 
     static void setSleepState(int state, long tsSec) {
+        boolean first = (sleepState < 0);
+
         sleepState = state;
         sleepTs = toMs(tsSec);
         sleepCount.incrementAndGet();
-        Logs.fire("睡眠检测", state == 1 ? "检测到入睡" : "检测到清醒");
+
+        // 首次也是历史值，标注清楚，避免误以为是刚发生的变化
+        if (first) {
+            Logs.i("首次读取生理睡眠：" + (state == 1 ? "睡眠" : "清醒")
+                    + "（仅记录）");
+        } else {
+            Logs.fire("睡眠检测", state == 1 ? "检测到入睡" : "检测到清醒");
+        }
         push();
     }
 
@@ -82,15 +91,40 @@ final class State {
             return;
         }
 
-        boolean changed = (sleepMode != on);
+        // 首次上报（sleepMode 还是 -1）只建立基线，不触发联动。
+        //
+        // 原因：App 与手表连接后第一次读到的通常是数据库里的历史值，
+        // 不是「此刻刚发生的变化」。如果按变化处理，会误触发一次
+        // 勿扰切换和通知。用户明确说这个状态没用。
+        // 首次上报只建立基线，不触发联动（那是历史值，不是刚发生的变化）。
+        //
+        // 但如果上次运行记录过状态，就从持久化恢复基线 ——
+        // 这样 hook 进程重启后，真实的状态变化不会因为「首次」被漏掉。
+        if (sleepMode < 0) {
+            Context pc = ctx();
+            int saved = (int) Prefs.getLong(pc, Prefs.K_LAST_SLEEP_MODE, -1);
+            if (saved == 0 || saved == 1) {
+                sleepMode = saved;
+                Logs.i("已恢复上次的睡眠模式基线：" + (saved == 1 ? "开" : "关"));
+            }
+        }
+
+        boolean first = (sleepMode < 0);
+
+        boolean changed = !first && (sleepMode != on);
 
         sleepMode = on;
+        Prefs.setLong(ctx(), Prefs.K_LAST_SLEEP_MODE, on);
         if (ts > 0) sleepModeTs = ts;
         sleepModeAt = System.currentTimeMillis();
         sleepModeCount.incrementAndGet();
 
         String who = fromPush ? "手表上报" : "App读取";
-        if (changed) {
+
+        if (first) {
+            Logs.i("首次读取睡眠模式：" + (on == 1 ? "开" : "关")
+                    + "（仅记录，不触发联动）");
+        } else if (changed) {
             Logs.key(on == 1 ? "🌙" : "☀️",
                     "手表" + (on == 1 ? "进入" : "退出") + "睡眠模式（" + who + "）");
         } else {

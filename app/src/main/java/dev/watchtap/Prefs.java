@@ -42,6 +42,8 @@ final class Prefs {
     static final String K_MUTE = "mute";
     static final String K_NOTIFY = "notify";
     static final String K_KEEPALIVE = "keepalive";
+    /** 上次记录的睡眠模式状态（0/1），用于进程重启后恢复基线 */
+    static final String K_LAST_SLEEP_MODE = "lastSleepMode";
 
     private Prefs() {}
 
@@ -109,6 +111,32 @@ final class Prefs {
         File own = ownFile(c);
         if (own == null) return;
         writeLocal(own, key, value ? "1" : "0");
+    }
+
+    /** 读一个长整型偏好。 */
+    static long getLong(Context c, String key, long def) {
+        File own = ownFile(c);
+        String v = own == null ? null : readLocal(own, key);
+        if (v == null) {
+            for (String p : candidatePaths(c)) {
+                if (p.isEmpty()) continue;
+                v = readLocal(new File(p), key);
+                if (v != null) break;
+            }
+        }
+        if (v == null) return def;
+        try {
+            return Long.parseLong(v.trim());
+        } catch (Throwable t) {
+            return def;
+        }
+    }
+
+    /** 写一个长整型偏好。 */
+    static void setLong(Context c, String key, long value) {
+        File own = ownFile(c);
+        if (own == null) return;
+        writeLocal(own, key, String.valueOf(value));
     }
 
     // ---------------------------------------------------------------- 文件
