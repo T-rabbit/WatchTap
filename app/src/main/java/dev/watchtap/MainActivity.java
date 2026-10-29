@@ -38,8 +38,6 @@ public class MainActivity extends Activity {
     private Button mDndBtn;
     private android.widget.Switch mMuteSwitch;
     private android.widget.Switch mNotifySwitch;
-    private android.widget.Switch mKeepSwitch;
-    private TextView mKeepStatus;
 
     private final Handler mHandler = new Handler(Looper.getMainLooper());
     private boolean mRunning = true;
@@ -112,22 +110,6 @@ public class MainActivity extends Activity {
         root.addView(switchRow("通知其他应用",
                 "手表进入/退出睡眠模式时发一条安静通知，供 Tasker 等自动化捕获",
                 mNotifySwitch));
-
-        // 保活开关
-        mKeepSwitch = makeSwitch(
-                Prefs.getBool(this, Prefs.K_KEEPALIVE, false),
-                this::toggleKeepAlive);
-        root.addView(switchRow("保活",
-                "保持模块运行，并在 OPPO 健康被系统杀掉时自动拉起（需要 root）",
-                mKeepSwitch));
-
-        // 保活状态
-        mKeepStatus = new TextView(this);
-        mKeepStatus.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9);
-        mKeepStatus.setTextColor(0xFF6B7280);
-        mKeepStatus.setPadding(dp(20), 0, dp(20), dp(4));
-        mKeepStatus.setVisibility(View.GONE);
-        root.addView(mKeepStatus);
 
         // 勿扰按钮
         mDndBtn = new Button(this);
@@ -416,22 +398,6 @@ public class MainActivity extends Activity {
             mMuteSwitch.setOnCheckedChangeListener((btn, checked) -> saveMutePref(checked));
         }
 
-        // ---- 保活状态 ----
-        boolean keep = Prefs.getBool(this, Prefs.K_KEEPALIVE, false);
-        if (mKeepSwitch.isChecked() != keep) {
-            mKeepSwitch.setOnCheckedChangeListener(null);
-            mKeepSwitch.setChecked(keep);
-            mKeepSwitch.setOnCheckedChangeListener((btn, v) -> toggleKeepAlive(v));
-        }
-        if (keep) {
-            mKeepStatus.setVisibility(View.VISIBLE);
-            if (mKeepStatus.getText().length() == 0) {
-                mKeepStatus.setText("监控中…");
-            }
-        } else {
-            mKeepStatus.setVisibility(View.GONE);
-        }
-
         // ---- 通知开关 ----
         boolean notify = Prefs.getBool(this, Prefs.K_NOTIFY, false);
         if (mNotifySwitch.isChecked() != notify) {
@@ -577,36 +543,6 @@ public class MainActivity extends Activity {
         refresh();
     }
 
-    /** 开关保活。 */
-    private void toggleKeepAlive(boolean on) {
-        try {
-            Prefs.setBool(this, Prefs.K_KEEPALIVE, on);
-
-            if (on) {
-                if (!Root.available()) {
-                    toast("需要 root 权限");
-                    StateStore.logLocal(this, "保活：root 不可用");
-                    return;
-                }
-                KeepAliveService.start(this);
-                String r = KeepAlive.apply();
-                StateStore.logLocal(this, "保活已开启\n" + r);
-                toast("保活已开启");
-                mKeepStatus.setVisibility(View.VISIBLE);
-                mKeepStatus.setText(r);
-            } else {
-                KeepAliveService.stop(this);
-                KeepAlive.revert();
-                StateStore.logLocal(this, "保活已关闭");
-                toast("保活已关闭");
-                mKeepStatus.setVisibility(View.GONE);
-            }
-        } catch (Throwable t) {
-            toast("操作失败：" + t.getClass().getSimpleName());
-            StateStore.logLocal(this, "保活操作失败 " + t);
-        }
-        refresh();
-    }
 
     /** 保存「通知其他应用」偏好。 */
     private void saveNotifyPref(boolean on) {
