@@ -34,6 +34,22 @@ public class StateStore extends ContentProvider {
     public static final String METHOD_PROBE_DND = "probeDnd";
     /** 诊断：本进程（provider）能否直接操作勿扰 */
     public static final String METHOD_PROBE_SELF = "probeSelf";
+    /**
+     * 同步偏好到 hook 进程。
+     *
+     * UI 改了开关后调这个，值会被写进 hook 进程自己的偏好文件，
+     * 之后 hook 进程自给自足，不再需要 provider。
+     */
+    public static final String METHOD_SYNC_PREFS = "syncPrefs";
+    /**
+     * hook 进程侧的接收端：把 UI 推来的偏好写进自己的存储。
+     *
+     * 注意：这个方法由 hook 进程注册的 provider 处理（见 HookPrefsProvider），
+     * 不是本 provider。这里只是常量定义。
+     */
+    public static final String METHOD_APPLY_PREFS = "applyPrefs";
+    /** hook 进程注册的 provider authority */
+    public static final String HOOK_AUTHORITY = "com.heytap.health.watchtap_prefs";
 
     // ---- 状态键 ----
     public static final String K_SLEEP_STATE = "sleepState";
@@ -147,6 +163,20 @@ public class StateStore extends ContentProvider {
             b.putString("logs", recentLogs());
             b.putBoolean("dndAccess", Dnd.hasAccess(getContext()));
             return b;
+        }
+
+        if (METHOD_SYNC_PREFS.equals(method) && extras != null) {
+            String key = extras.getString("key");
+            boolean value = extras.getBoolean("value", false);
+            Bundle r = new Bundle();
+            if (key == null) {
+                r.putBoolean("ok", false);
+                return r;
+            }
+            // hook 进程启动着的话，让它自己写
+            boolean ok = HookPrefsChannel.push(key, value);
+            r.putBoolean("ok", ok);
+            return r;
         }
 
         if (METHOD_PROBE_SELF.equals(method)) {

@@ -115,7 +115,7 @@ public class MainActivity extends Activity {
 
         // 保活开关
         mKeepSwitch = makeSwitch(
-                getSharedPreferences("watchtap", MODE_PRIVATE).getBoolean("keepalive", false),
+                Prefs.getBool(this, Prefs.K_KEEPALIVE, false),
                 this::toggleKeepAlive);
         root.addView(switchRow("保活",
                 "保持模块运行，并在 OPPO 健康被系统杀掉时自动拉起（需要 root）",
@@ -409,7 +409,7 @@ public class MainActivity extends Activity {
         mSleepSub.setText(sl >= 0 ? ago(slTs) : "等待上报");
 
         // ---- 同步静音开关 ----
-        boolean mute = b.getBoolean(StateStore.K_MUTE, true);
+        boolean mute = Prefs.getBool(this, Prefs.K_MUTE, true);
         if (mMuteSwitch.isChecked() != mute) {
             mMuteSwitch.setOnCheckedChangeListener(null);
             mMuteSwitch.setChecked(mute);
@@ -417,8 +417,7 @@ public class MainActivity extends Activity {
         }
 
         // ---- 保活状态 ----
-        boolean keep = getSharedPreferences("watchtap", MODE_PRIVATE)
-                .getBoolean("keepalive", false);
+        boolean keep = Prefs.getBool(this, Prefs.K_KEEPALIVE, false);
         if (mKeepSwitch.isChecked() != keep) {
             mKeepSwitch.setOnCheckedChangeListener(null);
             mKeepSwitch.setChecked(keep);
@@ -434,7 +433,7 @@ public class MainActivity extends Activity {
         }
 
         // ---- 通知开关 ----
-        boolean notify = b.getBoolean(StateStore.K_NOTIFY, false);
+        boolean notify = Prefs.getBool(this, Prefs.K_NOTIFY, false);
         if (mNotifySwitch.isChecked() != notify) {
             mNotifySwitch.setOnCheckedChangeListener(null);
             mNotifySwitch.setChecked(notify);
@@ -581,8 +580,7 @@ public class MainActivity extends Activity {
     /** 开关保活。 */
     private void toggleKeepAlive(boolean on) {
         try {
-            getSharedPreferences("watchtap", MODE_PRIVATE).edit()
-                    .putBoolean("keepalive", on).apply();
+            Prefs.setBool(this, Prefs.K_KEEPALIVE, on);
 
             if (on) {
                 if (!Root.available()) {
@@ -612,29 +610,19 @@ public class MainActivity extends Activity {
 
     /** 保存「通知其他应用」偏好。 */
     private void saveNotifyPref(boolean on) {
-        try {
-            Bundle b = new Bundle();
-            b.putBoolean(StateStore.K_NOTIFY, on);
-            getContentResolver().call(StateStore.URI, StateStore.METHOD_PUT, null, b);
-            StateStore.logLocal(this, "通知其他应用：" + (on ? "已开启" : "已关闭"));
-            if (on) {
-                toast("已开启，手表变化时会发通知");
-            }
-        } catch (Throwable t) {
-            toast("保存失败");
+        Prefs.setBool(this, Prefs.K_NOTIFY, on);
+        HookPrefsChannel.push(Prefs.K_NOTIFY, on);
+        StateStore.logLocal(this, "通知其他应用：" + (on ? "已开启" : "已关闭"));
+        if (on) {
+            toast("已开启，手表变化时会发通知");
         }
     }
 
     /** 保存「同步静音」偏好。 */
     private void saveMutePref(boolean mute) {
-        try {
-            Bundle b = new Bundle();
-            b.putBoolean(StateStore.K_MUTE, mute);
-            getContentResolver().call(StateStore.URI, StateStore.METHOD_PUT, null, b);
-            StateStore.logLocal(this, "同步静音：" + (mute ? "已开启" : "已关闭"));
-        } catch (Throwable t) {
-            toast("保存失败");
-        }
+        Prefs.setBool(this, Prefs.K_MUTE, mute);
+        HookPrefsChannel.push(Prefs.K_MUTE, mute);
+        StateStore.logLocal(this, "同步静音：" + (mute ? "已开启" : "已关闭"));
     }
 
     private void openDndSettings() {

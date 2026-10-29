@@ -121,37 +121,21 @@ final class State {
     private static volatile boolean sMutePref = true;
     private static volatile boolean sNotifyPref = false;
 
+    /** 由 UI 通过 provider 推送后调用，立即生效。 */
+    static void setMutePref(boolean v) {
+        sMutePref = v;
+    }
+
+    static void setNotifyPref(boolean v) {
+        sNotifyPref = v;
+    }
+
     static boolean mutePref() {
+        // 直接读共享文件，完全不依赖 provider 进程。
+        // 文件路径见 Prefs.candidates()，hook 进程和模块进程各写一份。
         Context c = ctx();
-        if (c == null) return sMutePref;
-
-        // 路径 1：问 provider（拿到的是 UI 刚改过的最新值）
-        try {
-            Bundle b = c.getContentResolver().call(
-                    StateStore.URI, StateStore.METHOD_GET, null, null);
-            if (b != null) {
-                sMutePref = b.getBoolean(StateStore.K_MUTE, true);
-                sNotifyPref = b.getBoolean(StateStore.K_NOTIFY, false);
-                return sMutePref;
-            }
-        } catch (Throwable ignored) {
-            // provider 不在
-        }
-
-        // 路径 2：直接读模块的 SharedPreferences 文件。
-        // hook 进程有 root，可以读别的应用的文件；没 root 就跳过。
-        // 这样 provider 死了之后，用户之前打开的开关不会退化成默认值。
-        try {
-            String path = "/data/user/0/dev.watchtap/shared_prefs/watchtap_state.xml";
-            String xml = Root.available() ? Root.exec("cat '" + path + "' 2>/dev/null", 4000) : "";
-            if (xml.contains("name=\"mute\"")) {
-                sMutePref = xml.contains("name=\"mute\" value=\"true\"");
-            }
-            if (xml.contains("name=\"notify\"")) {
-                sNotifyPref = xml.contains("name=\"notify\" value=\"true\"");
-            }
-        } catch (Throwable ignored) {
-        }
+        sMutePref = Prefs.getBool(c, Prefs.K_MUTE, true);
+        sNotifyPref = Prefs.getBool(c, Prefs.K_NOTIFY, false);
         return sMutePref;
     }
 
