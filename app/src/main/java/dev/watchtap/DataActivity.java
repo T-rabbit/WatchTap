@@ -97,6 +97,22 @@ public class DataActivity extends Activity {
         dump.setLayoutParams(dlp);
         bar.addView(dump);
 
+        Button collect = new Button(this);
+        collect.setText("采集");
+        collect.setAllCaps(false);
+        collect.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        collect.setTextColor(Color.WHITE);
+        collect.setBackgroundColor(0xFF059669);
+        collect.setMinHeight(0);
+        collect.setMinimumHeight(0);
+        collect.setPadding(dp(10), dp(5), dp(10), dp(5));
+        collect.setOnClickListener(v -> runCollect());
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        clp.rightMargin = dp(6);
+        collect.setLayoutParams(clp);
+        bar.addView(collect);
+
         bar.addView(close);
         root.addView(bar);
 
@@ -343,6 +359,55 @@ public class DataActivity extends Activity {
         }
 
         return box;
+    }
+
+    /** 立即用 root 采集一次。 */
+    private void runCollect() {
+        StateStore.logLocal(this, "手动触发数据采集");
+        try {
+            android.os.Bundle r = getContentResolver().call(
+                    StateStore.URI, StateStore.METHOD_COLLECT, null, null);
+            String raw = r == null ? "无返回" : r.getString("report", "");
+            if (raw == null || raw.isEmpty()) raw = "空报告";
+            showReport("采集结果", raw);
+            rebuild();
+        } catch (Throwable t) {
+            StateStore.logLocal(this, "采集失败：" + t);
+            android.widget.Toast.makeText(this, "采集失败", android.widget.Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /** 弹窗显示报告。 */
+    private void showReport(String title, String raw) {
+        final String report = raw;
+
+        TextView tv = new TextView(this);
+        tv.setText(report);
+        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
+        tv.setTypeface(Typeface.MONOSPACE);
+        tv.setTextColor(0xFFE5E7EB);
+        tv.setTextIsSelectable(true);
+        int p = dp(12);
+        tv.setPadding(p, p, p, p);
+
+        ScrollView sv = new ScrollView(this);
+        sv.addView(tv);
+        sv.setBackgroundColor(0xFF111827);
+
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(title)
+                .setView(sv)
+                .setPositiveButton("知道了", null)
+                .setNeutralButton("复制", (d, w) -> {
+                    android.content.ClipboardManager cm =
+                            (android.content.ClipboardManager) getSystemService(
+                                    CLIPBOARD_SERVICE);
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText(
+                            "watchtap-report", report));
+                    android.widget.Toast.makeText(this, "已复制",
+                            android.widget.Toast.LENGTH_SHORT).show();
+                })
+                .show();
     }
 
     /**

@@ -38,6 +38,10 @@ public class StateStore extends ContentProvider {
     public static final String METHOD_RECORD = "record";
     /** 自检：导出 App 数据库结构 */
     public static final String METHOD_DUMP_DB = "dumpDb";
+    /** 用 root 采集一次数据 */
+    public static final String METHOD_COLLECT = "collect";
+    /** 诊断 LSPosed 状态 */
+    public static final String METHOD_LSPOSED = "lsposed";
 
     // ---- 状态键 ----
     public static final String K_SLEEP_STATE = "sleepState";
@@ -84,7 +88,33 @@ public class StateStore extends ContentProvider {
             History.cleanup(getContext());
         } catch (Throwable ignored) {
         }
+        startAutoCollect();
         return true;
+    }
+
+    /**
+     * 定时用 root 采集数据。
+     *
+     * 不依赖 hook：hook 失效时这是唯一的数据来源。
+     * 首次延迟 8 秒（等系统启动完），之后每 5 分钟一次。
+     */
+    private void startAutoCollect() {
+        final android.os.Handler h =
+                new android.os.Handler(android.os.Looper.getMainLooper());
+        h.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (Root.available()) {
+                        String r = DbProbe.collect(getContext());
+                        Logs.fire("自动采集", r.split("\n")[0]);
+                    }
+                } catch (Throwable t) {
+                    Logs.w("自动采集失败", t);
+                }
+                h.postDelayed(this, 5 * 60 * 1000L);
+            }
+        }, 8000L);
     }
 
     private SharedPreferences pref() {
@@ -184,6 +214,18 @@ public class StateStore extends ContentProvider {
             return b;
         }
 
+        if (METHOD_COLLECT.equals(method)) {
+            Bundle r = new Bundle();
+            r.putString("report", DbProbe.collect(getContext()));
+            return r;
+        }
+
+        if (METHOD_LSPOSED.equals(method)) {
+            Bundle r = new Bundle();
+            r.putString("report", Root.diagnoseLsposed());
+            return r;
+        }
+
         if (METHOD_DUMP_DB.equals(method)) {
             Bundle r = new Bundle();
             StringBuilder sb = new StringBuilder();
@@ -210,13 +252,11 @@ public class StateStore extends ContentProvider {
             sb.append(History.selfCheck(getContext()));
             sb.append('\n');
 
-            sb.append("=== OPPO 健康数据库结构 ===\n");
-            String schema = p.getString(K_DB_SCHEMA, "");
-            if (schema.isEmpty()) {
-                sb.append("hook 进程尚未转储（等模块生效后重新自检）\n");
-            } else {
-                sb.append(schema);
-            }
+            sb.append("=== OPPO 健康数据库结构（root 读取）===\n");
+            sb.append(DbProbe.dumpSchema());
+            sb.append('\n');
+            sb.append("=== LSPosed 状态 ===\n");
+            sb.append(Root.diagnoseLsposed());
             r.putString("report", sb.toString());
             return r;
         }
