@@ -33,7 +33,44 @@ final class DirectDnd {
     static final int ZEN_PRIORITY = 1;
     static final int ZEN_NONE = 2;
 
+    /** NotificationManager.INTERRUPTION_FILTER_* */
+    private static final int FILTER_ALL = 1;
+    private static final int FILTER_PRIORITY = 2;
+    private static final int FILTER_NONE = 4;
+
     private DirectDnd() {}
+
+    /** 当前进程是否有勿扰权限。 */
+    static boolean hasAccess(Context c) {
+        if (c == null) return false;
+        try {
+            android.app.NotificationManager nm =
+                    (android.app.NotificationManager) c.getSystemService(
+                            Context.NOTIFICATION_SERVICE);
+            return nm != null && nm.isNotificationPolicyAccessGranted();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 调标准接口。返回是否未抛异常（是否真生效要看 zen_mode）。 */
+    private static boolean tryFilter(Context c, int filter) {
+        try {
+            android.app.NotificationManager nm =
+                    (android.app.NotificationManager) c.getSystemService(
+                            Context.NOTIFICATION_SERVICE);
+            if (nm == null) return false;
+            nm.setInterruptionFilter(filter);
+            Logs.i("调用系统接口 filter=" + filter);
+            return true;
+        } catch (SecurityException se) {
+            Logs.w("无勿扰权限", se);
+            return false;
+        } catch (Throwable t) {
+            Logs.w("调用系统接口失败", t);
+            return false;
+        }
+    }
 
     /**
      * 设置勿扰。
@@ -53,29 +90,44 @@ final class DirectDnd {
 
         Logs.fire("勿扰", "切换：" + describe(before) + " → " + describe(target));
 
-        // 两条命令都试：settings 直接改数据库，cmd 让 NMS 重载
-        String c1 = "settings put global zen_mode " + target;
-        String c2 = "cmd notification --zen " + zenArg(target);
+        Context c = State.ctx();
 
-        runSu(c1);
-        runSu(c2);
+        // ---- 路径 1：标准 API ----
+        // 只要给 com.heytap.health 授予了勿扰权限（cmd notification allow_dnd），
+        // 这条路就能直接生效，完全不需要 root。
+        if (c != null && hasAccess(c)) {
+            int filter = on ? (mute ? FILTER_NONE : FILTER_PRIORITY) : FILTER_ALL;
+            if (tryFilter(c, filter)) {
+                sleep(200);
+                int after = zen();
+                if (after == target || (on && after > 0) || (!on && after == 0)) {
+                    Logs.key("✓", "勿扰已切换为「" + describe(after) + "」（标准接口）");
+                    return true;
+                }
+                Logs.w("标准接口没生效，改用 su", null);
+            }
+        } else if (c != null) {
+            Logs.i("没有勿扰权限，尝试 su。如需免 root 请执行："
+                    + "adb shell cmd notification allow_dnd com.heytap.health");
+        }
 
-        // 等一下让变更生效
+        // ---- 路径 2：su 兜底 ----
+        runSu("settings put global zen_mode " + target);
+        runSu("cmd notification --zen " + zenArg(target));
         sleep(200);
 
         int after = zen();
         boolean ok = (after == target);
 
         if (!ok) {
-            // 有些 ROM 要再补一次
-            runSu(c1);
+            runSu("settings put global zen_mode " + target);
             sleep(150);
             after = zen();
             ok = (after == target);
         }
 
         if (ok) {
-            Logs.key("✓", "勿扰已切换为「" + describe(after) + "」");
+            Logs.key("✓", "勿扰已切换为「" + describe(after) + "」（su）");
         } else {
             Logs.e("勿扰切换失败（当前「" + describe(after) + "」）", null);
         }
@@ -170,9 +222,36 @@ final class DirectDnd {
         boolean hasSu = idOut.contains("uid=0");
         sb.append("root 可用：").append(hasSu ? "是" : "否").append('\n');
 
+        // 权限
+        boolean access = hasAccess(c);
+        sb.append("勿扰权限：").append(access ? "已授权" : "未授权");
+        if (!access) {
+            sb.append("（可执行：adb shell cmd notification allow_dnd ")
+                    .append(c == null ? "com.heytap.health" : c.getPackageName())
+                    .append("）");
+        }
+        sb.append('\n');
+
         // 测写 zen_mode
         int before = zen();
         sb.append("\n当前勿扰：").append(describe(before)).append('\n');
+
+        if (access) {
+            // 优先测标准接口
+            int test = before == 0 ? ZEN_NONE : ZEN_OFF;
+            int filter = before == 0 ? FILTER_NONE : FILTER_ALL;
+            tryFilter(c, filter);
+            sleep(250);
+            int after = zen();
+            sb.append("\n标准接口测试：").append(describe(test))
+                    .append(" → 实际 ").append(describe(after))
+                    .append(after == test ? "  ✓ 无需 root" : "  ✗").append('\n');
+            if (after != before) {
+                tryFilter(c, before == 0 ? FILTER_ALL : FILTER_NONE);
+                sleep(150);
+            }
+            if (after == test) return sb.toString();
+        }
 
         if (hasSu) {
             int test = before == 0 ? ZEN_NONE : ZEN_OFF;
