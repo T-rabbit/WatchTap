@@ -53,6 +53,7 @@ final class HealthHook {
      * 找不到就退回定时轮询。
      */
     static void install(XposedInterface api, ClassLoader cl) {
+        Logs.fire("采集", "数据采集已启动（在 hook 进程内运行）");
         boolean hooked = hookSyncFinished(api, cl);
         if (!hooked) {
             Logs.i("未找到数据同步回调，改用定时读取");
@@ -259,7 +260,17 @@ final class HealthHook {
      */
     private static void pollOnce() {
         android.content.Context ctx = State.ctx();
-        if (ctx == null) return;
+        if (ctx == null) {
+            Logs.w("数据采集：拿不到上下文", null);
+            return;
+        }
+
+        // 安全校验：必须在 OPPO 健康进程里跑，否则读的是模块自己的目录
+        String pkg = ctx.getPackageName();
+        if (!"com.heytap.health".equals(pkg)) {
+            Logs.w("数据采集：当前进程是 " + pkg + "，不是 com.heytap.health，跳过", null);
+            return;
+        }
 
         try {
             java.io.File dataDir = new java.io.File(ctx.getApplicationInfo().dataDir);

@@ -69,6 +69,7 @@ public class Main extends XposedModule {
         Logs.fire("模块", "OPPO 健康已就绪");
         State.attach(appCtx());
         State.syncZen();
+        State.startHeartbeat();
     }
 
     // ------------------------------------------------------------ 心率

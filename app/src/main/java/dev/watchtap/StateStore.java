@@ -59,6 +59,12 @@ public class StateStore extends ContentProvider {
     public static final String K_SCALAR_IDS = "scalarIds";
     /** 标量指标：对应值（分号分隔） */
     public static final String K_SCALAR_VALS = "scalarVals";
+    /** hook 进程心跳信息 */
+    public static final String K_HEARTBEAT = "heartbeat";
+    /** hook 进程转储的 App 数据库结构 */
+    public static final String K_DB_SCHEMA = "dbSchema";
+    /** 心跳时间戳 */
+    public static final String K_HB_TS = "hbTs";
 
     static final String PREF = "watchtap_state";
     static final String LOGFILE = "watchtap.log";
@@ -129,6 +135,13 @@ public class StateStore extends ContentProvider {
             if (extras.containsKey(K_LAST_MSG)) {
                 e.putString(K_LAST_MSG, safe(extras.getString(K_LAST_MSG)));
             }
+            if (extras.containsKey(K_HEARTBEAT)) {
+                e.putString(K_HEARTBEAT, safe(extras.getString(K_HEARTBEAT)));
+            }
+            if (extras.containsKey(K_DB_SCHEMA)) {
+                e.putString(K_DB_SCHEMA, safe(extras.getString(K_DB_SCHEMA)));
+            }
+            putLongIfPresent(extras, e, K_HB_TS);
             if (extras.containsKey(K_SCALAR_IDS)) {
                 e.putString(K_SCALAR_IDS, safe(extras.getString(K_SCALAR_IDS)));
                 e.putString(K_SCALAR_VALS, safe(extras.getString(K_SCALAR_VALS)));
@@ -162,6 +175,9 @@ public class StateStore extends ContentProvider {
             b.putString(K_COUNTS, p.getString(K_COUNTS, ""));
             b.putString(K_LAST_MSG, p.getString(K_LAST_MSG, ""));
             b.putString(K_SCALAR_IDS, p.getString(K_SCALAR_IDS, ""));
+            b.putString(K_HEARTBEAT, p.getString(K_HEARTBEAT, ""));
+            b.putString(K_DB_SCHEMA, p.getString(K_DB_SCHEMA, ""));
+            b.putLong(K_HB_TS, p.getLong(K_HB_TS, 0));
             b.putString(K_SCALAR_VALS, p.getString(K_SCALAR_VALS, ""));
             b.putString("logs", recentLogs());
             b.putBoolean("dndAccess", Dnd.hasAccess(getContext()));
@@ -171,10 +187,36 @@ public class StateStore extends ContentProvider {
         if (METHOD_DUMP_DB.equals(method)) {
             Bundle r = new Bundle();
             StringBuilder sb = new StringBuilder();
+
+            sb.append("=== 模块连接状态 ===\n");
+            sb.append("本进程包名：").append(getContext().getPackageName()).append('\n');
+            long hbTs = p.getLong(K_HB_TS, 0);
+            String hb = p.getString(K_HEARTBEAT, "");
+            if (hbTs <= 0 || hb.isEmpty()) {
+                sb.append("hook 进程：❌ 未连接（模块可能未生效）\n");
+                sb.append("  请确认：LSPosed 已启用、作用域含 com.heytap.health、已重启\n");
+            } else {
+                long ago = System.currentTimeMillis() - hbTs;
+                sb.append("hook 进程：").append(ago < 30000 ? "✓ 正常" : "⚠ 已停 " + (ago / 1000) + " 秒")
+                        .append('\n');
+                for (String line : hb.split("\n")) {
+                    sb.append("  ").append(line).append('\n');
+                }
+                sb.append("  最后心跳：").append(ago / 1000).append(" 秒前\n");
+            }
+            sb.append('\n');
+
             sb.append("=== 历史存储自检 ===\n");
             sb.append(History.selfCheck(getContext()));
-            sb.append("\n\n=== App 数据库结构 ===\n");
-            sb.append(HealthHook.dumpSchema());
+            sb.append('\n');
+
+            sb.append("=== OPPO 健康数据库结构 ===\n");
+            String schema = p.getString(K_DB_SCHEMA, "");
+            if (schema.isEmpty()) {
+                sb.append("hook 进程尚未转储（等模块生效后重新自检）\n");
+            } else {
+                sb.append(schema);
+            }
             r.putString("report", sb.toString());
             return r;
         }

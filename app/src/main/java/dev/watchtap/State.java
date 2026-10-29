@@ -139,6 +139,64 @@ final class State {
         push();
     }
 
+    /** hook 进程心跳信息，给 UI 显示 */
+    static volatile String HB = "";
+    private static volatile boolean sHbStarted;
+
+    /** 启动心跳：每 10 秒把 hook 进程状态写进 provider。 */
+    static void startHeartbeat() {
+        if (sHbStarted) return;
+        sHbStarted = true;
+
+        Context c = ctx();
+        if (c == null) {
+            // 等 Context 就绪
+            new android.os.Handler(android.os.Looper.getMainLooper())
+                    .postDelayed(State::startHeartbeat, 1000L);
+            return;
+        }
+
+        try {
+            String pkg = c.getPackageName();
+            String dataDir = c.getApplicationInfo().dataDir;
+            HB = "进程=" + pkg + " pid=" + android.os.Process.myPid()
+                    + "\n数据目录=" + dataDir;
+            Logs.fire("心跳", "hook 进程启动 pid=" + android.os.Process.myPid()
+                    + " 包名=" + pkg);
+
+            // 顺便把 OPPO 健康的数据库结构转储一次
+            String schema = HealthHook.dumpSchema();
+            Bundle hb = new Bundle();
+            hb.putString(StateStore.K_HEARTBEAT, HB);
+            hb.putString(StateStore.K_DB_SCHEMA, schema);
+            hb.putLong(StateStore.K_HB_TS, System.currentTimeMillis());
+            c.getContentResolver().call(
+                    StateStore.URI, StateStore.METHOD_PUT, null, hb);
+        } catch (Throwable t) {
+            Logs.w("心跳启动失败", t);
+        }
+
+        // 每 10 秒刷新一次时间
+        final android.os.Handler h =
+                new android.os.Handler(android.os.Looper.getMainLooper());
+        h.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                Context cc = ctx();
+                if (cc != null) {
+                    try {
+                        Bundle hb = new Bundle();
+                        hb.putLong(StateStore.K_HB_TS, System.currentTimeMillis());
+                        cc.getContentResolver().call(
+                                StateStore.URI, StateStore.METHOD_PUT, null, hb);
+                    } catch (Throwable ignored) {
+                    }
+                }
+                h.postDelayed(this, 10000L);
+            }
+        }, 10000L);
+    }
+
     static void noteMessage(int sid, int cid, int len) {
         lastMsg = "sid=" + sid + " cid=0x" + Integer.toHexString(cid) + " len=" + len;
     }

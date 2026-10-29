@@ -31,6 +31,7 @@ public class MainActivity extends Activity {
     private TextView mDndValue, mDndSub;
     private TextView mSleepValue, mSleepSub;
     private TextView mPermBar;
+    private TextView mHookBar;
     private TextView mDiag;
     private TextView mLogView;
     private TextView mLogToggle;
@@ -72,6 +73,17 @@ public class MainActivity extends Activity {
         subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         subtitle.setTextColor(0xFF8B94A3);
         root.addView(subtitle, lp(pad, 0, pad, dp(10)));
+
+        // hook 连接状态条
+        mHookBar = new TextView(this);
+        mHookBar.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        mHookBar.setTextColor(Color.WHITE);
+        mHookBar.setBackgroundColor(0xFFDC2626);
+        int hp = dp(10);
+        mHookBar.setPadding(hp, hp, hp, hp);
+        mHookBar.setText("⚠ 模块未连接 OPPO 健康，请检查 LSPosed 设置");
+        mHookBar.setVisibility(View.GONE);
+        root.addView(mHookBar, lp(pad, 0, pad, dp(8)));
 
         // 权限提示条
         mPermBar = new TextView(this);
@@ -430,11 +442,38 @@ public class MainActivity extends Activity {
             mNotifySwitch.setOnCheckedChangeListener((btn, checked) -> saveNotifyPref(checked));
         }
 
+        // ---- hook 连接状态 ----
+        long hbTs = b.getLong(StateStore.K_HB_TS, 0);
+        long hbAgo = hbTs > 0 ? System.currentTimeMillis() - hbTs : -1;
+        boolean hookAlive = hbAgo >= 0 && hbAgo < 30000;   // 30 秒内有心跳
+        if (hookAlive) {
+            mHookBar.setVisibility(View.GONE);
+        } else {
+            mHookBar.setVisibility(View.VISIBLE);
+            if (hbTs <= 0) {
+                mHookBar.setText("⚠ 模块未连接 OPPO 健康\n"
+                        + "请确认：LSPosed 已启用 · 作用域含 com.heytap.health · 已重启手机");
+                mHookBar.setBackgroundColor(0xFFDC2626);
+            } else {
+                mHookBar.setText("⚠ 连接已断 " + (hbAgo / 1000) + " 秒\n"
+                        + "OPPO 健康可能被系统杀掉了，重新打开它");
+                mHookBar.setBackgroundColor(0xFFEA580C);
+            }
+        }
+
         // ---- 权限条 ----
         mPermBar.setVisibility(access ? View.GONE : View.VISIBLE);
 
         // ---- 诊断 ----
         StringBuilder sb = new StringBuilder();
+        sb.append("模块连接：").append(hbTs <= 0 ? "未连接"
+                : (hookAlive ? "正常" : "已断 " + (hbAgo / 1000) + " 秒")).append('\n');
+        String hbInfo = b.getString(StateStore.K_HEARTBEAT, "");
+        if (!hbInfo.isEmpty()) {
+            for (String line : hbInfo.split("\n")) {
+                sb.append("  ").append(line).append('\n');
+            }
+        }
         sb.append("勿扰权限：").append(access ? "已授权" : "未授权")
                 .append(" · ").append(Dnd.diagnose(this)).append('\n');
         sb.append("模块最后更新：").append(updated > 0 ? ago(updated) : "-").append('\n');
