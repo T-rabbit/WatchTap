@@ -47,6 +47,14 @@ final class WatchNotify {
 
     static final int NOTIFY_ID = 1001;
 
+    /**
+     * 通知存活时长。
+     *
+     * 10 秒足够自动化软件（Tasker/MacroDroid）捕获并执行动作，
+     * 再长就是残留打扰。
+     */
+    private static final long LIFETIME_MS = 10_000L;
+
     private WatchNotify() {}
 
     /** 确保通知通道存在。 */
@@ -80,6 +88,22 @@ final class WatchNotify {
             Logs.e("发送通知失败：拿不到上下文", null);
             return false;
         }
+
+        // 统一在主线程执行：本方法可能由蓝牙回调线程触发，
+        // 而 Notification / Handler 的操作在主线程最稳。
+        try {
+            if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+                new android.os.Handler(android.os.Looper.getMainLooper())
+                        .post(() -> sendInternal(ctx, on));
+                return true;
+            }
+        } catch (Throwable ignored) {
+        }
+        return sendInternal(ctx, on);
+    }
+
+    private static boolean sendInternal(Context ctx, boolean on) {
+        if (ctx == null) return false;
         try {
             ensureChannel(ctx);
 
@@ -111,6 +135,8 @@ final class WatchNotify {
                     .setContentIntent(pi)
                     .setOngoing(false)
                     .setAutoCancel(true)
+                    // 系统级兜底：即使下面的定时器没跑，系统也会按时清掉
+                    .setTimeoutAfter(LIFETIME_MS)
                     .setCategory(Notification.CATEGORY_STATUS)
                     .build();
 
@@ -123,12 +149,55 @@ final class WatchNotify {
             n.extras = extras;
 
             nm.notify(NOTIFY_ID, n);
-            Logs.fire("通知", "已发送「" + title + "」");
+            Logs.fire("通知", "已发送「" + title + "」，10 秒后自动消失");
+
+            scheduleCancel();
             return true;
         } catch (Throwable t) {
             Logs.e("发送通知失败", t);
             return false;
         }
+    }
+
+    /**
+     * 10 秒后自动撤回。
+     *
+     * setTimeoutAfter 是系统级兜底，但它要求 API 26+ 且部分 ROM 实现不一致，
+     * 所以这里再自己定一个定时器双保险。
+     *
+     * 用主线程 Handler：ContentProvider/Service 里直接 new Handler()
+     * 在没有 Looper 的线程上会抛异常。
+     */
+    private static void scheduleCancel() {
+        try {
+            android.os.Handler h = new android.os.Handler(
+                    android.os.Looper.getMainLooper());
+            h.postDelayed(() -> {
+                try {
+                    Context c = ctx();
+                    if (c != null) {
+                        cancel(c);
+                        Logs.i("通知已自动清除");
+                    }
+                } catch (Throwable ignored) {
+                }
+            }, LIFETIME_MS);
+        } catch (Throwable t) {
+            Logs.w("安排通知自动清除失败", t);
+        }
+    }
+
+    /** 取当前进程的 Context。 */
+    private static Context ctx() {
+        try {
+            Class<?> at = Class.forName("android.app.ActivityThread");
+            Object app = at.getMethod("currentApplication").invoke(null);
+            if (app instanceof Context) {
+                return ((Context) app).getApplicationContext();
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
     }
 
     /** 撤回通知（避免堆积）。 */
