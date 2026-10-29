@@ -394,14 +394,38 @@ public class MainActivity extends Activity {
         try {
             Bundle r = getContentResolver().call(
                     StateStore.URI, StateStore.METHOD_PROBE_DND, null, null);
-            String report = r == null ? "无返回" : r.getString("report", "");
-            if (report.isEmpty()) report = "空报告";
+            String raw = r == null ? "无返回" : r.getString("report", "");
+            if (raw == null || raw.isEmpty()) raw = "空报告";
+            final String report = raw;
 
             StateStore.logLocal(this, "UI.probe 结果:\n" + report);
+
+            // 报告可能较长，用可滚动 TextView
+            TextView tv = new TextView(this);
+            tv.setText(report);
+            tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+            tv.setTypeface(Typeface.MONOSPACE);
+            tv.setTextColor(0xFFE5E7EB);
+            tv.setTextIsSelectable(true);
+            int pp = dp(16);
+            tv.setPadding(pp, pp, pp, pp);
+
+            ScrollView sv = new ScrollView(this);
+            sv.addView(tv);
+            sv.setBackgroundColor(0xFF111827);
+
             new android.app.AlertDialog.Builder(this)
                     .setTitle("勿扰写入诊断")
-                    .setMessage(report)
+                    .setView(sv)
                     .setPositiveButton("知道了", null)
+                    .setNeutralButton("复制", (d, w) -> {
+                        android.content.ClipboardManager cm =
+                                (android.content.ClipboardManager) getSystemService(
+                                        CLIPBOARD_SERVICE);
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText(
+                                "watchtap-probe", report));
+                        toast("已复制到剪贴板");
+                    })
                     .show();
         } catch (Throwable t) {
             StateStore.logLocal(this, "UI.probe 异常 " + t);
