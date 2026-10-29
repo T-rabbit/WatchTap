@@ -124,15 +124,33 @@ final class State {
     static boolean mutePref() {
         Context c = ctx();
         if (c == null) return sMutePref;
+
+        // 路径 1：问 provider（拿到的是 UI 刚改过的最新值）
         try {
             Bundle b = c.getContentResolver().call(
                     StateStore.URI, StateStore.METHOD_GET, null, null);
             if (b != null) {
                 sMutePref = b.getBoolean(StateStore.K_MUTE, true);
                 sNotifyPref = b.getBoolean(StateStore.K_NOTIFY, false);
+                return sMutePref;
             }
         } catch (Throwable ignored) {
-            // provider 不在，用缓存值
+            // provider 不在
+        }
+
+        // 路径 2：直接读模块的 SharedPreferences 文件。
+        // hook 进程有 root，可以读别的应用的文件；没 root 就跳过。
+        // 这样 provider 死了之后，用户之前打开的开关不会退化成默认值。
+        try {
+            String path = "/data/user/0/dev.watchtap/shared_prefs/watchtap_state.xml";
+            String xml = Root.available() ? Root.exec("cat '" + path + "' 2>/dev/null", 4000) : "";
+            if (xml.contains("name=\"mute\"")) {
+                sMutePref = xml.contains("name=\"mute\" value=\"true\"");
+            }
+            if (xml.contains("name=\"notify\"")) {
+                sNotifyPref = xml.contains("name=\"notify\" value=\"true\"");
+            }
+        } catch (Throwable ignored) {
         }
         return sMutePref;
     }
@@ -155,27 +173,14 @@ final class State {
             return;
         }
 
-        // 优先让 provider 发（通知归属 dev.watchtap，自动化好识别）。
-        // provider 不在时，退回在 hook 进程内发（归属变成 OPPO 健康，
-        // 但至少通知能出去，不会静默失效）。
+        // 直接在 hook 进程（OPPO 健康）内发通知，不经 provider。
+        // 这样模块进程死掉也不影响，通知归属就是 com.heytap.health。
         Context c = ctx();
-        if (c == null) return;
-
-        boolean sent = false;
-        try {
-            Bundle b = new Bundle();
-            b.putBoolean("on", on);
-            Bundle r = c.getContentResolver().call(
-                    StateStore.URI, StateStore.METHOD_NOTIFY, null, b);
-            sent = r != null && r.getBoolean("ok", false);
-        } catch (Throwable t) {
-            Logs.w("通过模块发送通知失败", t);
+        if (c == null) {
+            Logs.w("发送通知失败：拿不到上下文", null);
+            return;
         }
-
-        if (!sent) {
-            Logs.i("模块进程不可用，改由当前进程发送通知");
-            WatchNotify.send(c, on);
-        }
+        WatchNotify.send(c, on);
     }
 
     /** 手表睡眠模式变化 → 请求 provider 进程切勿扰。 */

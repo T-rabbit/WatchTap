@@ -34,8 +34,6 @@ public class StateStore extends ContentProvider {
     public static final String METHOD_PROBE_DND = "probeDnd";
     /** 诊断：本进程（provider）能否直接操作勿扰 */
     public static final String METHOD_PROBE_SELF = "probeSelf";
-    /** 发睡眠模式通知（由模块进程执行，通知归属 dev.watchtap） */
-    public static final String METHOD_NOTIFY = "notifySleep";
 
     // ---- 状态键 ----
     public static final String K_SLEEP_STATE = "sleepState";
@@ -149,14 +147,6 @@ public class StateStore extends ContentProvider {
             b.putString("logs", recentLogs());
             b.putBoolean("dndAccess", Dnd.hasAccess(getContext()));
             return b;
-        }
-
-        if (METHOD_NOTIFY.equals(method) && extras != null) {
-            boolean on = extras.getBoolean("on", false);
-            boolean ok = WatchNotify.send(getContext(), on);
-            Bundle r = new Bundle();
-            r.putBoolean("ok", ok);
-            return r;
         }
 
         if (METHOD_PROBE_SELF.equals(method)) {

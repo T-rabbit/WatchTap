@@ -15,6 +15,10 @@ import android.os.Bundle;
  * 手表进入/退出睡眠模式时，发一条通知。其他自动化软件（Tasker、MacroDroid、
  * AutoNotification 等）可以通过监听通知来触发自己的动作。
  *
+ * ==== 运行位置 ====
+ * 本类只在 hook 进程（com.heytap.health）内调用，通知归属就是 OPPO 健康。
+ * 不再由模块进程发送，所以模块被杀也不影响通知。
+ *
  * ==== 通道设计 ====
  * 通道重要性设为 LOW：不发声、不弹窗、不出现在锁屏，只在通知栏留一条记录。
  * 这样自动化软件能读到，又不会打扰用户。
@@ -26,7 +30,7 @@ import android.os.Bundle;
  * 通知里的关键信息：
  *   - 通道 ID：watchtap_sleep
  *   - 标题：「手表已进入睡眠模式」/「手表已退出睡眠模式」
- *   - 包名：dev.watchtap
+ *   - 包名：com.heytap.health（hook 进程所在应用）
  *   - extra：EXTRA_STATE / EXTRA_SLEEP_MODE / EXTRA_TIME
  *
  * Tasker 里可以用 Profile → Event → UI → Notification，选择本应用，
@@ -88,7 +92,13 @@ final class WatchNotify {
                     ? "可用于触发其他自动化动作"
                     : "睡眠模式已结束";
 
-            Intent intent = new Intent(ctx, MainActivity.class);
+            // 注意：本方法可能在 hook 进程（com.heytap.health）内执行。
+            // 不能用 new Intent(ctx, MainActivity.class) —— 那会构造一个指向
+            // 别的包组件的 Intent，点击后可能崩溃。
+            // 改用显式组件名，由系统跨包跳转。
+            Intent intent = new Intent();
+            intent.setComponent(new android.content.ComponentName(
+                    "dev.watchtap", "dev.watchtap.MainActivity"));
             intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
             PendingIntent pi = PendingIntent.getActivity(
                     ctx, 0, intent,
