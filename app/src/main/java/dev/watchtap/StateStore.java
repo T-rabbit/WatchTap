@@ -32,6 +32,8 @@ public class StateStore extends ContentProvider {
     public static final String METHOD_LOG = "log";
     /** 诊断：逐条测试勿扰写入路径，返回每一步结果 */
     public static final String METHOD_PROBE_DND = "probeDnd";
+    /** 诊断：本进程（provider）能否直接操作勿扰 */
+    public static final String METHOD_PROBE_SELF = "probeSelf";
     /** 发睡眠模式通知（由模块进程执行，通知归属 dev.watchtap） */
     public static final String METHOD_NOTIFY = "notifySleep";
 
@@ -154,6 +156,18 @@ public class StateStore extends ContentProvider {
             boolean ok = WatchNotify.send(getContext(), on);
             Bundle r = new Bundle();
             r.putBoolean("ok", ok);
+            return r;
+        }
+
+        if (METHOD_PROBE_SELF.equals(method)) {
+            Bundle r = new Bundle();
+            StringBuilder sb = new StringBuilder();
+            sb.append("=== provider 进程自检 ===\n");
+            sb.append("包名：").append(getContext().getPackageName()).append('\n');
+            sb.append("root：").append(Root.available() ? "可用" : "不可用").append('\n');
+            sb.append("勿扰权限：").append(Dnd.hasAccess(getContext()) ? "已授权" : "未授权").append('\n');
+            sb.append("当前状态：").append(Dnd.describe(Dnd.zen(getContext()))).append('\n');
+            r.putString("report", sb.toString());
             return r;
         }
 

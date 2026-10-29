@@ -446,6 +446,8 @@ public class MainActivity extends Activity {
 
         // ---- 诊断 ----
         StringBuilder sb = new StringBuilder();
+        sb.append("联动方式：在 OPPO 健康进程内用 su 完成，")
+                .append("模块进程退出也不影响\n");
         sb.append("勿扰权限：").append(access ? "已授权" : "未授权")
                 .append(" · ").append(Dnd.diagnose(this)).append('\n');
         sb.append("模块最后更新：").append(updated > 0 ? ago(updated) : "-").append('\n');

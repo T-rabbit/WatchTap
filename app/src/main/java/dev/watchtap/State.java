@@ -117,29 +117,30 @@ final class State {
      * hook 进程读不到模块进程的 SharedPreferences，
      * 所以通过 provider 的 GET 拿。
      */
+    /** 上次读到的偏好（provider 不可用时用这个）。 */
+    private static volatile boolean sMutePref = true;
+    private static volatile boolean sNotifyPref = false;
+
     static boolean mutePref() {
         Context c = ctx();
-        if (c == null) return true;
+        if (c == null) return sMutePref;
         try {
             Bundle b = c.getContentResolver().call(
                     StateStore.URI, StateStore.METHOD_GET, null, null);
-            return b == null || b.getBoolean(StateStore.K_MUTE, true);
-        } catch (Throwable t) {
-            return true;
+            if (b != null) {
+                sMutePref = b.getBoolean(StateStore.K_MUTE, true);
+                sNotifyPref = b.getBoolean(StateStore.K_NOTIFY, false);
+            }
+        } catch (Throwable ignored) {
+            // provider 不在，用缓存值
         }
+        return sMutePref;
     }
 
     /** 读取「发送通知」偏好。 */
     static boolean notifyPref() {
-        Context c = ctx();
-        if (c == null) return false;
-        try {
-            Bundle b = c.getContentResolver().call(
-                    StateStore.URI, StateStore.METHOD_GET, null, null);
-            return b != null && b.getBoolean(StateStore.K_NOTIFY, false);
-        } catch (Throwable t) {
-            return false;
-        }
+        mutePref();   // 顺带刷新两个偏好
+        return sNotifyPref;
     }
 
     /**
@@ -153,42 +154,40 @@ final class State {
             Logs.i("通知开关已关闭，跳过发送");
             return;
         }
+
+        // 优先让 provider 发（通知归属 dev.watchtap，自动化好识别）。
+        // provider 不在时，退回在 hook 进程内发（归属变成 OPPO 健康，
+        // 但至少通知能出去，不会静默失效）。
         Context c = ctx();
         if (c == null) return;
+
+        boolean sent = false;
         try {
             Bundle b = new Bundle();
             b.putBoolean("on", on);
-            c.getContentResolver().call(
+            Bundle r = c.getContentResolver().call(
                     StateStore.URI, StateStore.METHOD_NOTIFY, null, b);
+            sent = r != null && r.getBoolean("ok", false);
         } catch (Throwable t) {
-            Logs.e("发送通知调用失败", t);
+            Logs.w("通过模块发送通知失败", t);
+        }
+
+        if (!sent) {
+            Logs.i("模块进程不可用，改由当前进程发送通知");
+            WatchNotify.send(c, on);
         }
     }
 
     /** 手表睡眠模式变化 → 请求 provider 进程切勿扰。 */
     static void autoDnd(boolean on, boolean mute) {
-        Context c = ctx();
-        if (c == null) {
-            Logs.e("自动联动失败：拿不到上下文", null);
-            return;
-        }
-        try {
-            Logs.fire("自动联动", (on ? "开启" : "关闭") + "勿扰"
-                    + (on ? (mute ? "（同步静音）" : "（不同步静音）") : ""));
-            Bundle b = new Bundle();
-            b.putBoolean("on", on);
-            b.putBoolean("mute", mute);
-            Bundle r = c.getContentResolver().call(
-                    StateStore.URI, StateStore.METHOD_TOGGLE_DND, null, b);
-            boolean ok = r != null && r.getBoolean("ok", false);
-            int zen = r == null ? -1 : r.getInt("zen", -1);
-            if (ok) {
-                Logs.key("✓", "自动联动成功，勿扰状态：" + Dnd.describe(zen));
-            } else {
-                Logs.e("自动联动失败，勿扰状态：" + Dnd.describe(zen), null);
-            }
-        } catch (Throwable t) {
-            Logs.e("自动联动调用失败", t);
+        Logs.fire("自动联动", (on ? "开启" : "关闭") + "勿扰"
+                + (on ? (mute ? "（同步静音）" : "（不同步静音）") : ""));
+
+        // 直接在 hook 进程内用 su 操作，不依赖模块进程存活。
+        // 原实现走 ContentResolver.call，模块进程被杀后就全挂了。
+        boolean ok = DirectDnd.set(on, mute);
+        if (ok) {
+            push();
         }
     }
 
