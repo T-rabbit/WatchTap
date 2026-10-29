@@ -31,6 +31,10 @@ final class State {
 
     static volatile String lastMsg = "";
 
+    /** 各标量指标的最新值（id → value），给 provider 读 */
+    static final java.util.concurrent.ConcurrentHashMap<String, Long> SCALARS =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
     private State() {}
 
     static void attach(Context ctx) {
@@ -57,6 +61,9 @@ final class State {
         sleepTs = toMs(tsSec);
         sleepCount.incrementAndGet();
         Logs.fire("睡眠检测", state == 1 ? "检测到入睡" : "检测到清醒");
+        // 生理睡眠状态映射到分期：睡着记浅睡，清醒记清醒
+        record(Metrics.SLEEP_STAGE,
+                state == 1 ? Metrics.STAGE_LIGHT : Metrics.STAGE_AWAKE);
         push();
     }
 
@@ -99,10 +106,37 @@ final class State {
 
         push();
 
+        record(Metrics.SLEEP_MODE, on);
+
         if (changed) {
             autoDnd(on == 1, mutePref());
             maybeNotify(on == 1);
         }
+    }
+
+    /**
+     * 记录一个指标值：更新内存、写历史、推给 UI。
+     *
+     * @param id  Metrics 里的指标 id
+     */
+    static void record(String id, long value) {
+        SCALARS.put(id, value);
+
+        long now = System.currentTimeMillis();
+        Context c = ctx();
+        if (c != null) {
+            try {
+                Bundle b = new Bundle();
+                b.putString("metric", id);
+                b.putLong("value", value);
+                b.putLong("ts", now);
+                c.getContentResolver().call(
+                        StateStore.URI, StateStore.METHOD_RECORD, null, b);
+            } catch (Throwable t) {
+                Logs.w("记录指标失败：" + id, t);
+            }
+        }
+        push();
     }
 
     static void noteMessage(int sid, int cid, int len) {
@@ -214,6 +248,20 @@ final class State {
             b.putString(StateStore.K_COUNTS,
                     sleepCount.get() + "/" + sleepModeCount.get());
             b.putString(StateStore.K_LAST_MSG, lastMsg);
+
+            // 标量指标打包
+            StringBuilder ids = new StringBuilder();
+            StringBuilder vals = new StringBuilder();
+            for (java.util.Map.Entry<String, Long> e : SCALARS.entrySet()) {
+                if (ids.length() > 0) {
+                    ids.append(';');
+                    vals.append(';');
+                }
+                ids.append(e.getKey());
+                vals.append(e.getValue());
+            }
+            b.putString(StateStore.K_SCALAR_IDS, ids.toString());
+            b.putString(StateStore.K_SCALAR_VALS, vals.toString());
 
             c.getContentResolver().call(StateStore.URI, StateStore.METHOD_PUT, null, b);
         } catch (Throwable ignored) {

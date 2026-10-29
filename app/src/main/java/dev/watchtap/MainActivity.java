@@ -33,6 +33,8 @@ public class MainActivity extends Activity {
     private TextView mPermBar;
     private TextView mDiag;
     private TextView mLogView;
+    private TextView mLogToggle;
+    private boolean mLogExpanded = false;
     private Button mDndBtn;
     private android.widget.Switch mMuteSwitch;
     private android.widget.Switch mNotifySwitch;
@@ -135,6 +137,22 @@ public class MainActivity extends Activity {
         probe.setOnClickListener(v -> runProbe());
         root.addView(probe, lp(pad, dp(4), pad, dp(4)));
 
+        // 数据详情入口（二级页面）
+        Button detail = new Button(this);
+        detail.setText("查看数据详情与历史");
+        detail.setAllCaps(false);
+        detail.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        detail.setTextColor(Color.WHITE);
+        detail.setBackgroundColor(0xFF059669);
+        detail.setMinHeight(0);
+        detail.setMinimumHeight(0);
+        detail.setPadding(dp(8), dp(6), dp(8), dp(6));
+        detail.setOnClickListener(v -> {
+            StateStore.logLocal(this, "打开数据详情页");
+            startActivity(new android.content.Intent(this, DataActivity.class));
+        });
+        root.addView(detail, lp(pad, dp(4), pad, dp(4)));
+
         // 刷新按钮
         Button refresh = new Button(this);
         refresh.setText("刷新状态");
@@ -159,12 +177,14 @@ public class MainActivity extends Activity {
         mDiag.setText("读取中…");
         root.addView(mDiag, lp(pad, dp(8), pad, dp(12)));
 
-        // 日志标题
-        TextView logTitle = new TextView(this);
-        logTitle.setText("操作日志（最近 60 条）");
-        logTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
-        logTitle.setTextColor(0xFF8B94A3);
-        root.addView(logTitle, lp(pad, dp(8), pad, dp(6)));
+        // 日志标题（点击展开/收起）
+        mLogToggle = new TextView(this);
+        mLogToggle.setText("▸ 操作日志（点击展开）");
+        mLogToggle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        mLogToggle.setTextColor(0xFF8B94A3);
+        mLogToggle.setPadding(dp(4), dp(6), dp(4), dp(6));
+        mLogToggle.setOnClickListener(v -> toggleLog());
+        root.addView(mLogToggle, lp(pad, dp(6), pad, dp(2)));
 
         // 日志正文
         mLogView = new TextView(this);
@@ -177,6 +197,7 @@ public class MainActivity extends Activity {
         int lpad = dp(10);
         mLogView.setPadding(lpad, lpad, lpad, lpad);
         mLogView.setText("等待日志…");
+        mLogView.setVisibility(View.GONE);   // 默认收起
         root.addView(mLogView, lp(pad, 0, pad, dp(16)));
 
         scroll.addView(root, new ViewGroup.LayoutParams(
@@ -226,6 +247,21 @@ public class MainActivity extends Activity {
     /** 布尔回调，避免 lambda 参数类型推断问题。 */
     private interface OnBool {
         void on(boolean value);
+    }
+
+    /** 展开/收起日志。 */
+    private void toggleLog() {
+        mLogExpanded = !mLogExpanded;
+        mLogView.setVisibility(mLogExpanded ? View.VISIBLE : View.GONE);
+        mLogToggle.setText(mLogExpanded ? "▾ 操作日志（点击收起）" : "▸ 操作日志（点击展开）");
+        if (mLogExpanded) {
+            // 展开时滚到日志区
+            mLogView.post(() -> {
+                if (mLogView.getParent() != null) {
+                    ((View) mLogView.getParent()).requestLayout();
+                }
+            });
+        }
     }
 
     /** 造一个紧凑的 Switch。 */

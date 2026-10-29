@@ -35,6 +35,11 @@ public class Main extends XposedModule {
         ClassLoader cl = p.getDefaultClassLoader();
 
         try {
+            hookHeartRate(cl);
+        } catch (Throwable t) {
+            Logs.e("心率监听安装失败", t);
+        }
+        try {
             hookSleepMode(cl);
         } catch (Throwable t) {
             Logs.e("睡眠模式监听安装失败", t);
@@ -49,6 +54,11 @@ public class Main extends XposedModule {
         } catch (Throwable t) {
             Logs.e("消息监听安装失败", t);
         }
+        try {
+            HealthHook.install(this, cl);
+        } catch (Throwable t) {
+            Logs.e("健康数据采集安装失败", t);
+        }
 
         warmup();
     }
@@ -59,6 +69,144 @@ public class Main extends XposedModule {
         Logs.fire("模块", "OPPO 健康已就绪");
         State.attach(appCtx());
         State.syncZen();
+    }
+
+    // ------------------------------------------------------------ 心率
+
+    /**
+     * 实时心率。
+     *
+     * HRDataFetcher.processPacketData(byte[]) 解析 FitnessProtoV2.HeartRateDataV2，
+     * 这是 BLE 实时推送，比数据库里的值新。
+     */
+    private void hookHeartRate(ClassLoader cl) {
+        Class<?> c = load(cl,
+                "com.heytap.device.data.sporthealth.pull.fetcher.HRDataFetcher");
+        if (c == null) {
+            Logs.i("未找到实时心率接口，将从数据库读取");
+            return;
+        }
+        int n = 0;
+        for (Method m : c.getDeclaredMethods()) {
+            if (!"processPacketData".equals(m.getName())) continue;
+            if (m.getParameterCount() != 1) continue;
+            if (m.getParameterTypes()[0] != byte[].class) continue;
+
+            api.hook(m).intercept(chain -> {
+                try {
+                    int bpm = parseHeartRate((byte[]) chain.getArg(0));
+                    if (bpm > 0) {
+                        if (bpm != sLastHr) {
+                            sLastHr = bpm;
+                            Logs.fire("心率", bpm + " bpm");
+                        }
+                        State.record(Metrics.HR, bpm);
+                    }
+                } catch (Throwable t) {
+                    Logs.e("解析心率失败", t);
+                }
+                return chain.proceed();
+            });
+            n++;
+        }
+        Logs.fire("监听", n > 0 ? "心率监听已就位" : "未找到心率接口");
+    }
+
+    private int sLastHr = -1;
+
+    /** 从心率包解出 bpm（取最后一个有效值）。 */
+    private int parseHeartRate(byte[] d) {
+        if (d == null || d.length < 3) return -1;
+        int last = -1;
+        int i = 0;
+        while (i < d.length) {
+            long tag = 0;
+            int shift = 0;
+            while (i < d.length) {
+                int cur = d[i++] & 0xFF;
+                tag |= (long) (cur & 0x7F) << shift;
+                if ((cur & 0x80) == 0) break;
+                shift += 7;
+                if (shift > 63) return last;
+            }
+            int field = (int) (tag >>> 3);
+            int wire = (int) (tag & 7);
+
+            if (wire == 2) {
+                long len = 0;
+                shift = 0;
+                while (i < d.length) {
+                    int cur = d[i++] & 0xFF;
+                    len |= (long) (cur & 0x7F) << shift;
+                    if ((cur & 0x80) == 0) break;
+                    shift += 7;
+                }
+                int end = (int) Math.min(d.length, i + len);
+                if (field == 1) {
+                    int v = scanHr(d, i, end);
+                    if (v > 0) last = v;
+                }
+                i = end;
+            } else if (wire == 0) {
+                shift = 0;
+                while (i < d.length) {
+                    int cur = d[i++] & 0xFF;
+                    if ((cur & 0x80) == 0) break;
+                    shift += 7;
+                }
+            } else if (wire == 5) {
+                i += 4;
+            } else if (wire == 1) {
+                i += 8;
+            } else {
+                break;
+            }
+        }
+        return last;
+    }
+
+    private int scanHr(byte[] d, int start, int end) {
+        int i = start;
+        while (i < end && i < d.length) {
+            long tag = 0;
+            int shift = 0;
+            while (i < end && i < d.length) {
+                int cur = d[i++] & 0xFF;
+                tag |= (long) (cur & 0x7F) << shift;
+                if ((cur & 0x80) == 0) break;
+                shift += 7;
+            }
+            int field = (int) (tag >>> 3);
+            int wire = (int) (tag & 7);
+            if (wire == 0) {
+                long v = 0;
+                shift = 0;
+                while (i < end && i < d.length) {
+                    int cur = d[i++] & 0xFF;
+                    v |= (long) (cur & 0x7F) << shift;
+                    if ((cur & 0x80) == 0) break;
+                    shift += 7;
+                }
+                if (field == 1 && v > 0 && v <= 250) return (int) v;
+            } else if (wire == 2) {
+                long len = 0;
+                shift = 0;
+                while (i < end && i < d.length) {
+                    int cur = d[i++] & 0xFF;
+                    len |= (long) (cur & 0x7F) << shift;
+                    if ((cur & 0x80) == 0) break;
+                    shift += 7;
+                }
+                i += (int) len;
+            } else if (wire == 5) {
+                i += 4;
+            } else if (wire == 1) {
+                i += 8;
+            } else {
+                break;
+            }
+        }
+        return -1;
     }
 
     // ------------------------------------------------------------ 睡眠模式

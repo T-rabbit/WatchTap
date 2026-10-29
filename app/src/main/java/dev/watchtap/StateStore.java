@@ -34,6 +34,8 @@ public class StateStore extends ContentProvider {
     public static final String METHOD_PROBE_DND = "probeDnd";
     /** 发睡眠模式通知（由模块进程执行，通知归属 dev.watchtap） */
     public static final String METHOD_NOTIFY = "notifySleep";
+    /** 记录一个指标值到历史 */
+    public static final String METHOD_RECORD = "record";
 
     // ---- 状态键 ----
     public static final String K_SLEEP_STATE = "sleepState";
@@ -51,6 +53,10 @@ public class StateStore extends ContentProvider {
     public static final String K_UPDATED = "updated";
     public static final String K_COUNTS = "counts";
     public static final String K_LAST_MSG = "lastMsg";
+    /** 标量指标：id 列表（分号分隔） */
+    public static final String K_SCALAR_IDS = "scalarIds";
+    /** 标量指标：对应值（分号分隔） */
+    public static final String K_SCALAR_VALS = "scalarVals";
 
     static final String PREF = "watchtap_state";
     static final String LOGFILE = "watchtap.log";
@@ -65,6 +71,11 @@ public class StateStore extends ContentProvider {
     public boolean onCreate() {
         sInstance = this;
         Logs.setLocal(true);
+        // 启动时清理过期历史（30 天前）
+        try {
+            History.cleanup(getContext());
+        } catch (Throwable ignored) {
+        }
         return true;
     }
 
@@ -116,6 +127,10 @@ public class StateStore extends ContentProvider {
             if (extras.containsKey(K_LAST_MSG)) {
                 e.putString(K_LAST_MSG, safe(extras.getString(K_LAST_MSG)));
             }
+            if (extras.containsKey(K_SCALAR_IDS)) {
+                e.putString(K_SCALAR_IDS, safe(extras.getString(K_SCALAR_IDS)));
+                e.putString(K_SCALAR_VALS, safe(extras.getString(K_SCALAR_VALS)));
+            }
             e.apply();
             return Bundle.EMPTY;
         }
@@ -144,9 +159,21 @@ public class StateStore extends ContentProvider {
             b.putLong(K_UPDATED, p.getLong(K_UPDATED, 0));
             b.putString(K_COUNTS, p.getString(K_COUNTS, ""));
             b.putString(K_LAST_MSG, p.getString(K_LAST_MSG, ""));
+            b.putString(K_SCALAR_IDS, p.getString(K_SCALAR_IDS, ""));
+            b.putString(K_SCALAR_VALS, p.getString(K_SCALAR_VALS, ""));
             b.putString("logs", recentLogs());
             b.putBoolean("dndAccess", Dnd.hasAccess(getContext()));
             return b;
+        }
+
+        if (METHOD_RECORD.equals(method) && extras != null) {
+            String id = extras.getString("metric");
+            long value = extras.getLong("value", 0);
+            long ts = extras.getLong("ts", System.currentTimeMillis());
+            if (id != null) {
+                History.append(getContext(), ts, id, value);
+            }
+            return Bundle.EMPTY;
         }
 
         if (METHOD_NOTIFY.equals(method) && extras != null) {
