@@ -277,9 +277,14 @@ public class MainActivity extends Activity {
             mDndValue.setTextColor(0xFF9CA3AF);
             mDndSub.setText("通知正常接收");
         } else if (zen > 0) {
+            // zen: 1=仅优先 2=完全静音 3=仅闹钟，都算「已开启」
             mDndValue.setText("已开启");
             mDndValue.setTextColor(0xFFF59E0B);
-            mDndSub.setText(ago(zenTs));
+            String mode = zen == 1 ? "仅优先通知"
+                    : zen == 2 ? "完全静音"
+                    : zen == 3 ? "仅闹钟"
+                    : ("模式 " + zen);
+            mDndSub.setText(mode + " · " + ago(zenTs));
         } else {
             mDndValue.setText("--");
             mDndSub.setText("读取失败");
@@ -346,11 +351,13 @@ public class MainActivity extends Activity {
     // ------------------------------------------------------------ 勿扰
 
     private void toggleDnd() {
-        Bundle cur = read();
-        int zen = cur == null ? 0 : cur.getInt(StateStore.K_ZEN, 0);
-        boolean turnOn = zen == 0;
+        // 不用缓存值判断方向：它可能过期（日志里出现过 req=true 但实际已开启）。
+        // 直接读系统当前 zen_mode。
+        int zen = Dnd.zen(this);
+        boolean turnOn = (zen == 0);
 
-        StateStore.logLocal(this, "UI.toggleDnd 点击 req=" + turnOn);
+        StateStore.logLocal(this, "UI.toggleDnd 点击 liveZen=" + zen
+                + " req=" + turnOn);
 
         try {
             Bundle b = new Bundle();

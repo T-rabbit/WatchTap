@@ -80,6 +80,19 @@ final class Dnd {
             return true;
         }
 
+        // 路径 3：关闭时如果还残留 AZR 规则，清掉它们。
+        // zen=3 有时是某条规则（如系统就寝模式）导致的，filter 清不掉。
+        if (!on) {
+            String e3 = clearRules(ctx);
+            after = verify(ctx);
+            if (after == 0) {
+                Logs.fire("DND.set", "target=OFF before=" + before
+                        + " after=0 via=clearRules [OK]");
+                return true;
+            }
+            e2 = (e2 == null ? "" : e2 + " | ") + e3;
+        }
+
         Logs.fire("DND.set", "target=" + (on ? "ON" : "OFF")
                 + " before=" + before + " after=" + after
                 + " filter=" + (e1 == null ? "ok-no-effect" : e1)
@@ -138,6 +151,40 @@ final class Dnd {
 
         Logs.fire("DND.root", log.toString());
         return anyOk ? null : log.toString();
+    }
+
+    /**
+     * 清除所有非系统自动规则，用于关闭勿扰。
+     *
+     * HyperOS 上 zen_mode 可能是 3（仅闹钟），有时是系统就寝/驾驶规则造成的，
+     * setInterruptionFilter(ALL) 不一定能清掉，需要显式删规则。
+     */
+    private static String clearRules(Context ctx) {
+        try {
+            NotificationManager nm = (NotificationManager) ctx.getSystemService(
+                    Context.NOTIFICATION_SERVICE);
+            if (nm == null) return "NotificationManager null";
+
+            java.util.Map<String, android.app.AutomaticZenRule> rules =
+                    nm.getAutomaticZenRules();
+            if (rules == null || rules.isEmpty()) return "no rules";
+
+            StringBuilder sb = new StringBuilder();
+            for (java.util.Map.Entry<String, android.app.AutomaticZenRule> e : rules.entrySet()) {
+                try {
+                    boolean ok = nm.removeAutomaticZenRule(e.getKey());
+                    sb.append(e.getKey()).append('=').append(ok).append("; ");
+                } catch (Throwable t) {
+                    sb.append(e.getKey()).append("=ERR(")
+                            .append(Logs.describe(t)).append("); ");
+                }
+            }
+            Logs.fire("DND.clearRules", sb.toString());
+            return sb.toString();
+        } catch (Throwable t) {
+            Logs.w("DND.clearRules failed", t);
+            return Logs.describe(t);
+        }
     }
 
     private static String join(String[] a) {
@@ -221,7 +268,27 @@ final class Dnd {
         int a2 = verify(ctx);
         sb.append("    ").append(e2 == null ? "调用成功" : "失败: " + e2)
                 .append(" → zen=").append(a2);
-        if (turnOn ? a2 > 0 : a2 == 0) return sb.append("  ✓\n").toString();
+        if (turnOn ? a2 > 0 : a2 == 0) {
+            sb.append("  ✓\n\n");
+            // 成功后再验证能否切回来 —— 这是上一版反馈的问题
+            sb.append("--- 反向验证 ---\n");
+            sb.append("[3] 切回 ").append(turnOn ? "关闭" : "开启").append('\n');
+            String e3 = tryFilter(ctx, !turnOn);
+            int a3 = verify(ctx);
+            sb.append("    ").append(e3 == null ? "调用成功" : "失败: " + e3)
+                    .append(" → zen=").append(a3);
+            if (turnOn ? a3 == 0 : a3 > 0) {
+                sb.append("  ✓ 双向正常\n");
+            } else {
+                sb.append("  ✗ 切不回去\n");
+                sb.append("    尝试清规则…\n");
+                String e4 = clearRules(ctx);
+                int a4 = verify(ctx);
+                sb.append("    ").append(e4).append(" → zen=").append(a4);
+                sb.append(a4 == 0 ? "  ✓\n" : "  ✗\n");
+            }
+            return sb.toString();
+        }
         sb.append("  ✗\n\n");
 
         sb.append("✗ 两条路径均失败\n");

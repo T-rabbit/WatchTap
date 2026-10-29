@@ -109,6 +109,16 @@ public class StateStore extends ContentProvider {
         }
 
         if (METHOD_GET.equals(method)) {
+            // 每次读取都顺便刷新一次 zen_mode：它可能被系统或其他应用改动，
+            // 只靠写入时更新会显示过期状态。
+            int live = Dnd.zen(getContext());
+            if (live >= 0 && live != p.getInt(K_ZEN, -1)) {
+                p.edit()
+                        .putInt(K_ZEN, live)
+                        .putLong(K_ZEN_TS, System.currentTimeMillis())
+                        .apply();
+            }
+
             Bundle b = new Bundle();
             b.putInt(K_SLEEP_STATE, p.getInt(K_SLEEP_STATE, -1));
             b.putLong(K_SLEEP_TS, p.getLong(K_SLEEP_TS, 0));
@@ -148,10 +158,17 @@ public class StateStore extends ContentProvider {
                     + " ok=" + ok
                     + (ok && before == after ? " [NO_CHANGE]" : ""));
 
+            // 关键：把实际值写回状态，否则 UI 读到的还是旧值，
+            // 导致下一次点击方向判断错误（日志里 req=true 但已经是开启）。
+            p.edit()
+                    .putInt(K_ZEN, after)
+                    .putLong(K_ZEN_TS, System.currentTimeMillis())
+                    .apply();
+
             Bundle r = new Bundle();
             // 以实际 zen_mode 变化为准，而不是 set() 的返回值：
             // setInterruptionFilter 不抛异常不代表真的生效。
-            r.putBoolean("ok", ok && (on ? after > 0 : after == 0));
+            r.putBoolean("ok", on ? after > 0 : after == 0);
             r.putInt("zen", after);
             r.putBoolean("access", access);
             return r;
