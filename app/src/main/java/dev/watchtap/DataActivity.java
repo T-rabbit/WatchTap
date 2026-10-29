@@ -81,6 +81,22 @@ public class DataActivity extends Activity {
         close.setMinimumHeight(0);
         close.setPadding(dp(10), dp(5), dp(10), dp(5));
         close.setOnClickListener(v -> finish());
+        Button dump = new Button(this);
+        dump.setText("自检");
+        dump.setAllCaps(false);
+        dump.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        dump.setTextColor(0xFFCBD5E1);
+        dump.setBackgroundColor(0xFF7C2D12);
+        dump.setMinHeight(0);
+        dump.setMinimumHeight(0);
+        dump.setPadding(dp(10), dp(5), dp(10), dp(5));
+        dump.setOnClickListener(v -> dumpDb());
+        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        dlp.rightMargin = dp(6);
+        dump.setLayoutParams(dlp);
+        bar.addView(dump);
+
         bar.addView(close);
         root.addView(bar);
 
@@ -327,6 +343,52 @@ public class DataActivity extends Activity {
         }
 
         return box;
+    }
+
+    /**
+     * 数据库自检：列出 App 里所有数据库、表、列。
+     *
+     * 采集不到数据时点这个，能直接看出数据结构是什么样。
+     */
+    private void dumpDb() {
+        StateStore.logLocal(this, "开始数据库自检");
+        try {
+            android.os.Bundle r = getContentResolver().call(
+                    StateStore.URI, StateStore.METHOD_DUMP_DB, null, null);
+            String raw = r == null ? "无返回" : r.getString("report", "");
+            if (raw == null || raw.isEmpty()) raw = "空报告";
+            final String report = raw;
+
+            TextView tv = new TextView(this);
+            tv.setText(report);
+            tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
+            tv.setTypeface(Typeface.MONOSPACE);
+            tv.setTextColor(0xFFE5E7EB);
+            tv.setTextIsSelectable(true);
+            int p = dp(12);
+            tv.setPadding(p, p, p, p);
+
+            ScrollView sv = new ScrollView(this);
+            sv.addView(tv);
+            sv.setBackgroundColor(0xFF111827);
+
+            new android.app.AlertDialog.Builder(this)
+                    .setTitle("App 数据库结构")
+                    .setView(sv)
+                    .setPositiveButton("知道了", null)
+                    .setNeutralButton("复制", (d, w) -> {
+                        android.content.ClipboardManager cm =
+                                (android.content.ClipboardManager) getSystemService(
+                                        CLIPBOARD_SERVICE);
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText(
+                                "watchtap-db", report));
+                        android.widget.Toast.makeText(this, "已复制",
+                                android.widget.Toast.LENGTH_SHORT).show();
+                    })
+                    .show();
+        } catch (Throwable t) {
+            StateStore.logLocal(this, "自检失败：" + t);
+        }
     }
 
     private LinearLayout.LayoutParams lp(int l, int t, int r, int b) {

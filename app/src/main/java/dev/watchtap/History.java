@@ -214,6 +214,69 @@ final class History {
         }
     }
 
+    /**
+     * 自检：验证存储链路。
+     *
+     * 依次检查：目录可写 → 能追加 → 能读回 → 统计各指标条数。
+     * 用来定位「UI 显示 0 数据」到底是没采集、还是没写入、还是没读出。
+     */
+    static String selfCheck(Context ctx) {
+        StringBuilder sb = new StringBuilder();
+        if (ctx == null) return "拿不到上下文";
+
+        try {
+            File d = dir(ctx);
+            sb.append("存储目录：").append(d.getAbsolutePath()).append('\n');
+            sb.append("目录存在：").append(d.exists()).append('\n');
+            sb.append("可写测试：").append(d.canWrite()).append("\n\n");
+
+            // 写入测试
+            long now = System.currentTimeMillis();
+            append(ctx, now, "_selftest", 1);
+            File f = fileOf(ctx, now);
+            sb.append("当前文件：").append(f.getName()).append('\n');
+            sb.append("文件存在：").append(f.exists())
+                    .append("，大小 ").append(f.length()).append(" 字节\n\n");
+
+            // 读回测试
+            List<Point> back = read(ctx, "_selftest", 0, 0);
+            sb.append("读回测试：").append(back.isEmpty() ? "失败（写入后读不到）" : "成功")
+                    .append('\n');
+
+            // 清理测试数据
+            try {
+                f.delete();
+            } catch (Throwable ignored) {
+            }
+
+            // 已有文件列表
+            File[] all = d.listFiles();
+            sb.append("\n已有文件：").append(all == null ? 0 : all.length).append(" 个\n");
+            if (all != null) {
+                int shown = 0;
+                for (File x : all) {
+                    if (!x.getName().endsWith(".csv")) continue;
+                    sb.append("  ").append(x.getName())
+                            .append("  ").append(x.length() / 1024).append("KB\n");
+                    if (++shown >= 5) break;
+                }
+            }
+
+            // 各指标条数
+            sb.append("\n各指标记录数（近 7 天）：\n");
+            long from = now - 7L * 24 * 3600 * 1000;
+            for (Metrics.Def def : Metrics.all()) {
+                int n = read(ctx, def.id, from, now).size();
+                sb.append("  ").append(def.name).append("：").append(n).append('\n');
+            }
+
+            sb.append("\n总计：").append(countAll(ctx)).append(" 条\n");
+        } catch (Throwable t) {
+            sb.append("自检异常：").append(Logs.brief(t));
+        }
+        return sb.toString();
+    }
+
     /** 统计总记录数，给 UI 显示。 */
     static int countAll(Context ctx) {
         int n = 0;

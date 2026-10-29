@@ -36,6 +36,8 @@ public class StateStore extends ContentProvider {
     public static final String METHOD_NOTIFY = "notifySleep";
     /** 记录一个指标值到历史 */
     public static final String METHOD_RECORD = "record";
+    /** 自检：导出 App 数据库结构 */
+    public static final String METHOD_DUMP_DB = "dumpDb";
 
     // ---- 状态键 ----
     public static final String K_SLEEP_STATE = "sleepState";
@@ -164,6 +166,17 @@ public class StateStore extends ContentProvider {
             b.putString("logs", recentLogs());
             b.putBoolean("dndAccess", Dnd.hasAccess(getContext()));
             return b;
+        }
+
+        if (METHOD_DUMP_DB.equals(method)) {
+            Bundle r = new Bundle();
+            StringBuilder sb = new StringBuilder();
+            sb.append("=== 历史存储自检 ===\n");
+            sb.append(History.selfCheck(getContext()));
+            sb.append("\n\n=== App 数据库结构 ===\n");
+            sb.append(HealthHook.dumpSchema());
+            r.putString("report", sb.toString());
+            return r;
         }
 
         if (METHOD_RECORD.equals(method) && extras != null) {

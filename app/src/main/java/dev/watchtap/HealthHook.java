@@ -106,6 +106,153 @@ final class HealthHook {
     }
 
     /**
+     * 自检：把 App 里所有数据库、表、列都列出来。
+     *
+     * 用途：采集不到数据时，先看清楚数据结构长什么样，
+     * 再决定用什么表名/列名去取。
+     *
+     * @return 人可读的报告
+     */
+    static String dumpSchema() {
+        android.content.Context ctx = State.ctx();
+        if (ctx == null) return "拿不到 App 上下文（hook 进程没起来？）";
+
+        StringBuilder sb = new StringBuilder();
+        try {
+            java.io.File dataDir = new java.io.File(ctx.getApplicationInfo().dataDir);
+            sb.append("应用数据目录：").append(dataDir.getAbsolutePath()).append("\n");
+            sb.append("目录存在：").append(dataDir.exists()).append("\n\n");
+
+            // 遍历可能存数据的目录
+            String[] dirs = {"databases", "files", "shared_prefs", "no_backup"};
+            int totalDb = 0;
+
+            for (String d : dirs) {
+                java.io.File dir = new java.io.File(dataDir, d);
+                if (!dir.exists()) {
+                    sb.append("[").append(d).append("] 不存在\n");
+                    continue;
+                }
+                java.io.File[] files = dir.listFiles();
+                if (files == null) {
+                    sb.append("[").append(d).append("] 无法列出\n");
+                    continue;
+                }
+
+                // 只看 .db 和 .sqlite
+                int shown = 0;
+                for (java.io.File f : files) {
+                    String n = f.getName();
+                    if (!n.endsWith(".db") && !n.endsWith(".sqlite")
+                            && !n.endsWith(".db3")) {
+                        continue;
+                    }
+                    totalDb++;
+                    sb.append("[").append(d).append("/").append(n)
+                            .append("] ").append(f.length() / 1024).append("KB\n");
+                    sb.append(dumpOneDb(f, sb));
+                    if (++shown >= 8) {
+                        sb.append("  …（该目录还有更多）\n");
+                        break;
+                    }
+                }
+                if (shown == 0) {
+                    sb.append("[").append(d).append("] 没有数据库文件\n");
+                }
+                sb.append('\n');
+            }
+
+            sb.append("数据库文件总数：").append(totalDb).append("\n");
+            if (totalDb == 0) {
+                sb.append("\n提示：数据可能不在本地 SQLite，而是从云端拉取，\n");
+                sb.append("或者存在其他格式的文件里。\n");
+            }
+        } catch (Throwable t) {
+            sb.append("自检异常：").append(Logs.brief(t)).append('\n');
+        }
+        return sb.toString();
+    }
+
+    /** 列出一个库的表和列。 */
+    private static String dumpOneDb(java.io.File f, StringBuilder sb) {
+        android.database.sqlite.SQLiteDatabase sql = null;
+        android.database.Cursor c = null;
+        try {
+            sql = android.database.sqlite.SQLiteDatabase.openDatabase(
+                    f.getAbsolutePath(), null,
+                    android.database.sqlite.SQLiteDatabase.OPEN_READONLY);
+
+            java.util.List<String> tables = new java.util.ArrayList<>();
+            c = sql.rawQuery("SELECT name FROM sqlite_master WHERE type='table'", null);
+            while (c.moveToNext()) {
+                String n = c.getString(0);
+                if (n != null && !n.startsWith("sqlite_") && !n.startsWith("android_")) {
+                    tables.add(n);
+                }
+            }
+            c.close();
+            c = null;
+
+            if (tables.isEmpty()) {
+                sb.append("  无用户表\n");
+                return "";
+            }
+
+            for (String t : tables) {
+                // 行数
+                long rows = -1;
+                android.database.Cursor cc = null;
+                try {
+                    cc = sql.rawQuery("SELECT COUNT(*) FROM " + t, null);
+                    if (cc.moveToFirst()) rows = cc.getLong(0);
+                } catch (Throwable ignored) {
+                } finally {
+                    if (cc != null) cc.close();
+                }
+
+                // 列名
+                StringBuilder cols = new StringBuilder();
+                android.database.Cursor ci = null;
+                try {
+                    ci = sql.rawQuery("SELECT * FROM " + t + " LIMIT 0", null);
+                    if (ci != null) {
+                        String[] names = ci.getColumnNames();
+                        for (int i = 0; i < names.length; i++) {
+                            if (i > 0) cols.append(',');
+                            cols.append(names[i]);
+                        }
+                    }
+                } catch (Throwable ignored) {
+                } finally {
+                    if (ci != null) ci.close();
+                }
+
+                sb.append("  └ ").append(t).append(" (").append(rows).append(" 行)\n");
+                if (cols.length() > 0) {
+                    sb.append("      列: ").append(cols).append('\n');
+                }
+            }
+            return "";
+        } catch (Throwable t) {
+            sb.append("  打不开：").append(Logs.brief(t)).append('\n');
+            return "";
+        } finally {
+            if (c != null) {
+                try {
+                    c.close();
+                } catch (Throwable ignored) {
+                }
+            }
+            if (sql != null) {
+                try {
+                    sql.close();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+    }
+
+    /**
      * 读一次数据库，把能读到的指标记入历史。
      *
      * 同一指标 5 分钟内只记一次，避免刷屏。
@@ -115,25 +262,33 @@ final class HealthHook {
         if (ctx == null) return;
 
         try {
-            java.io.File dbDir = new java.io.File(ctx.getApplicationInfo().dataDir, "databases");
+            java.io.File dataDir = new java.io.File(ctx.getApplicationInfo().dataDir);
+            java.io.File dbDir = new java.io.File(dataDir, "databases");
+
             if (!dbDir.exists()) {
-                Logs.w("找不到数据库目录", null);
+                Logs.w("数据采集：找不到 databases 目录（" + dbDir.getAbsolutePath() + "）", null);
                 return;
             }
 
             java.io.File[] dbs = dbDir.listFiles();
             if (dbs == null || dbs.length == 0) {
-                Logs.w("数据库目录为空", null);
+                Logs.w("数据采集：databases 目录为空", null);
                 return;
             }
 
             int found = 0;
+            int scanned = 0;
             for (java.io.File db : dbs) {
-                if (!db.getName().endsWith(".db")) continue;
+                String n = db.getName();
+                if (!n.endsWith(".db") && !n.endsWith(".sqlite")) continue;
+                scanned++;
                 found += readDb(ctx, db);
             }
+
             if (found > 0) {
-                Logs.fire("数据采集", "读到 " + found + " 项指标");
+                Logs.fire("数据采集", "扫描 " + scanned + " 个库，读到 " + found + " 项指标");
+            } else {
+                Logs.w("数据采集：扫描 " + scanned + " 个库，未匹配到任何指标表", null);
             }
         } catch (Throwable t) {
             Logs.w("读取数据库失败", t);
