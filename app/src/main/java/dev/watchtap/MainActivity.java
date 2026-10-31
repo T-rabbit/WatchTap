@@ -32,6 +32,7 @@ public class MainActivity extends Activity {
     private TextView mSleepValue, mSleepSub;
     private TextView mPermBar;
     private TextView mDiag;
+    private Button mUpdateBtn;
     private TextView mLogView;
     private TextView mLogToggle;
     private boolean mLogExpanded = false;
@@ -182,7 +183,20 @@ public class MainActivity extends Activity {
             StateStore.logLocal(this, "UI.refresh 手动刷新");
             refresh();
         });
-        root.addView(refresh, lp(pad, dp(4), pad, dp(14)));
+        root.addView(refresh, lp(pad, dp(4), pad, dp(4)));
+
+        // 检查更新
+        mUpdateBtn = new Button(this);
+        mUpdateBtn.setText("检查更新");
+        mUpdateBtn.setAllCaps(false);
+        mUpdateBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        mUpdateBtn.setMinHeight(0);
+        mUpdateBtn.setMinimumHeight(0);
+        mUpdateBtn.setPadding(dp(8), dp(6), dp(8), dp(6));
+        mUpdateBtn.setTextColor(0xFFCBD5E1);
+        mUpdateBtn.setBackgroundColor(0xFF1E293B);
+        mUpdateBtn.setOnClickListener(v -> checkUpdate());
+        root.addView(mUpdateBtn, lp(pad, dp(4), pad, dp(14)));
 
         // 诊断
         mDiag = new TextView(this);
@@ -310,6 +324,80 @@ public class MainActivity extends Activity {
         wrap.addView(row, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         return wrap;
+    }
+
+    /** 检查 GitHub 更新。 */
+    private void checkUpdate() {
+        mUpdateBtn.setEnabled(false);
+        mUpdateBtn.setText("检查中…");
+        StateStore.logLocal(this, "开始检查更新");
+
+        UpdateChecker.check(this, r -> {
+            mUpdateBtn.setEnabled(true);
+            mUpdateBtn.setText("检查更新");
+
+            if (!r.ok) {
+                StateStore.logLocal(this, "检查更新失败：" + r.error);
+                toast("检查失败：" + r.error);
+                return;
+            }
+
+            if (!r.hasUpdate) {
+                StateStore.logLocal(this, "已是最新版本 " + r.currentTag);
+                toast("已是最新版本（" + r.currentTag + "）");
+                return;
+            }
+
+            StateStore.logLocal(this, "发现新版本 " + r.latestTag);
+            showUpdateDialog(r);
+        });
+    }
+
+    /** 显示更新弹窗。 */
+    private void showUpdateDialog(UpdateChecker.Result r) {
+        String notes = r.notes == null ? "" : r.notes.trim();
+        if (notes.length() > 600) {
+            notes = notes.substring(0, 600) + "…";
+        }
+
+        String msg = "当前版本：" + r.currentTag + "\n"
+                + "最新版本：" + r.latestTag + "\n\n"
+                + (notes.isEmpty() ? "（无更新说明）" : notes);
+
+        TextView tv = new TextView(this);
+        tv.setText(msg);
+        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        tv.setTextColor(0xFFE5E7EB);
+        tv.setTextIsSelectable(true);
+        int p = dp(14);
+        tv.setPadding(p, p, p, p);
+
+        ScrollView sv = new ScrollView(this);
+        sv.addView(tv);
+        sv.setBackgroundColor(0xFF111827);
+
+        android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(this)
+                .setTitle("发现新版本 " + r.latestTag)
+                .setView(sv)
+                .setPositiveButton("下载", (d, w) -> {
+                    if (!r.apkUrl.isEmpty()) {
+                        UpdateChecker.openDownload(this, r.apkUrl);
+                    } else {
+                        UpdateChecker.openReleases(this);
+                    }
+                })
+                .setNegativeButton("稍后", null);
+
+        if (!r.apkUrl.isEmpty()) {
+            b.setNeutralButton("复制链接", (d, w) -> {
+                android.content.ClipboardManager cm =
+                        (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                cm.setPrimaryClip(android.content.ClipData.newPlainText(
+                        "watchtap-update", r.apkUrl));
+                toast("链接已复制");
+            });
+        }
+        b.show();
     }
 
     /** 展开/收起操作日志。默认收起，避免主界面太长。 */
