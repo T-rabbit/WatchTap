@@ -104,7 +104,7 @@ public class MainActivity extends Activity {
         root.addView(card("生理睡眠检测", mSleepValue, mSleepSub));
 
         // 开关区（统一构造）
-        mMuteSwitch = makeSwitch(true, this::saveMutePref);
+        mMuteSwitch = makeSwitch(false, this::saveMutePref);
         root.addView(switchRow("同步静音",
                 "开启后勿扰会静音全部通知；关闭则允许优先通知",
                 mMuteSwitch));
@@ -510,7 +510,7 @@ public class MainActivity extends Activity {
         mSleepSub.setText(sl >= 0 ? ago(slTs) : "等待上报");
 
         // ---- 同步静音开关 ----
-        boolean mute = Prefs.getBool(this, Prefs.K_MUTE, true);
+        boolean mute = Prefs.getBool(this, Prefs.K_MUTE, false);
         if (mMuteSwitch.isChecked() != mute) {
             mMuteSwitch.setOnCheckedChangeListener(null);
             mMuteSwitch.setChecked(mute);

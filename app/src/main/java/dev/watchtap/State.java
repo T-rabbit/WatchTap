@@ -152,7 +152,7 @@ final class State {
      * 所以通过 provider 的 GET 拿。
      */
     /** 上次读到的偏好（provider 不可用时用这个）。 */
-    private static volatile boolean sMutePref = true;
+    private static volatile boolean sMutePref = false;
     private static volatile boolean sNotifyPref = false;
 
     /** 开关修复是否启用（运行时读取，带缓存）。 */
@@ -211,7 +211,10 @@ final class State {
         // 直接读共享文件，完全不依赖 provider 进程。
         // 文件路径见 Prefs.candidates()，hook 进程和模块进程各写一份。
         Context c = ctx();
-        sMutePref = Prefs.getBool(c, Prefs.K_MUTE, true);
+        // 默认 false：读不到偏好时宁可不静音，也不要误静音。
+        // 之前默认 true，只要文件读失败就会静默变成完全静音，
+        // 这正是「同步静音关着却仍然静音」的来源之一。
+        sMutePref = Prefs.getBool(c, Prefs.K_MUTE, false);
         sNotifyPref = Prefs.getBool(c, Prefs.K_NOTIFY, false);
         return sMutePref;
     }

@@ -32,6 +32,7 @@ final class DirectDnd {
     static final int ZEN_OFF = 0;
     static final int ZEN_PRIORITY = 1;
     static final int ZEN_NONE = 2;
+    static final int ZEN_ALARMS = 3;
 
     /** NotificationManager.INTERRUPTION_FILTER_* */
     private static final int FILTER_ALL = 1;
@@ -100,11 +101,20 @@ final class DirectDnd {
             if (tryFilter(c, filter)) {
                 sleep(200);
                 int after = zen();
-                if (after == target || (on && after > 0) || (!on && after == 0)) {
+
+                // 必须严格等于目标值。
+                //
+                // 之前这里是 `after == target || (on && after > 0)`，
+                // 那个宽松条件导致 mute=false（目标 ZEN_PRIORITY=1）时，
+                // 只要结果是「已开启」（比如 ZEN_NONE=2）就判为成功，
+                // 于是同步静音关闭了却仍然完全静音。
+                if (after == target) {
                     Logs.key("✓", "勿扰已切换为「" + describe(after) + "」（标准接口）");
                     return true;
                 }
-                Logs.w("标准接口没生效，改用 su", null);
+
+                Logs.w("标准接口得到「" + describe(after)
+                        + "」，与目标「" + describe(target) + "」不符，改用 su", null);
             }
         } else if (c != null) {
             Logs.i("没有勿扰权限，尝试 su。如需免 root 请执行："
@@ -128,10 +138,24 @@ final class DirectDnd {
 
         if (ok) {
             Logs.key("✓", "勿扰已切换为「" + describe(after) + "」（su）");
-        } else {
-            Logs.e("勿扰切换失败（当前「" + describe(after) + "」）", null);
+            return true;
         }
-        return ok;
+
+        // 关键：mute=false 时绝不能停在「完全静音」。
+        // 有些 ROM 不认 zen_mode=1，会保持或跳到 2/3。
+        // 这种情况退一步用 FILTER_ALL 关掉勿扰，比错误地静音要好。
+        if (on && !mute && isMuted(after)) {
+            Logs.w("系统不接受「仅优先通知」，为避免误静音，暂时关闭勿扰", null);
+            runSu("settings put global zen_mode " + ZEN_OFF);
+            runSu("cmd notification --zen off");
+            sleep(150);
+            int now = zen();
+            Logs.i("当前：「" + describe(now) + "」（同步静音关闭，不应静音）");
+            return now == ZEN_OFF;
+        }
+
+        Logs.e("勿扰切换失败（当前「" + describe(after) + "」）", null);
+        return false;
     }
 
     /** 关掉勿扰（简化调用）。 */
@@ -151,6 +175,11 @@ final class DirectDnd {
         }
     }
 
+    /** 当前 zen 是否处于静音状态（完全静音或仅闹钟）。 */
+    private static boolean isMuted(int zen) {
+        return zen >= ZEN_NONE;
+    }
+
     /** zen_mode 转中文。 */
     static String describe(int zen) {
         switch (zen) {
@@ -163,10 +192,12 @@ final class DirectDnd {
         }
     }
 
+    /** zen_mode 值 → cmd notification --zen 的参数。 */
     private static String zenArg(int zen) {
         switch (zen) {
-            case ZEN_PRIORITY: return "priority";
-            case ZEN_NONE: return "none";
+            case ZEN_PRIORITY: return "priority";   // 仅优先通知
+            case ZEN_NONE: return "none";           // 完全静音
+            case ZEN_ALARMS: return "alarms";       // 仅闹钟
             default: return "off";
         }
     }
