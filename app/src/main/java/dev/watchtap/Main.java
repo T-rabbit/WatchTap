@@ -1,23 +1,54 @@
 package dev.watchtap;
 
 import java.lang.reflect.Method;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
 import io.github.libxposed.api.XposedModuleInterface;
 
 /**
- * WatchTap 入口。
+ * WatchTap 入口（v2.20.0 → 适配 OPPO 健康 6.10.15）。
  *
- * 两个采集点：
- *   1. SleepModeManager.onReceiveDeviceSleepModeData —— 手表上报睡眠模式
- *   2. BTClient.onMessageReceived —— 协议层兜底（cid=0xcc 里含 startNow）
+ * 三个采集点。6.10.15 把所有类名重新混淆了，旧名一个都不存在，
+ * 所以全部改成「候选类名 + 参数类型特征匹配」：
+ *
+ *   1. 手表睡眠模式
+ *        旧: com.heytap.device.sleep.SleepModeManager#onReceiveDeviceSleepModeData
+ *        新: com.heytap.device.sleep.n#c(SleepModelSettings)   ← 类 n 的 TAG 仍是 "SleepModeManager"
+ *   2. 生理睡眠
+ *        旧: ...sporthealth.repository.SleepStateRepository$Companion#reportSleepState
+ *        新: 该包已整体移除 → 从报文 cid=0x20（SleepStateChangeNotify，f1=startTime、f3=state）解析
+ *   3. 消息层兜底
+ *        旧: ...devicemanager.btclient.BTClient#onMessageReceived
+ *        新: xs.e#onMessageReceived（线程池 tag 仍是 "BTClient"，(sid,cid)=(-1,-1) 通配注册）
+ *            兜底: ...connect.rawapi.impl.listener.LM3Message$mMessageCallback$1#onMessageEvent
  *
  * 所有 hook 都只读数据，不改 App 行为。勿扰由模块自己写（provider 进程）。
  */
 public class Main extends XposedModule {
 
     private static final String PKG = "com.heytap.health";
+
+    /** 手表→手机 全量消息入口候选（6.10.15 → 旧版本） */
+    private static final String[] CAPTURE_CLASSES = {
+            "xs.e",
+            "com.heytap.health.connect.rawapi.impl.listener.LM3Message$mMessageCallback$1",
+            "com.heytap.health.devicemanager.btclient.BTClient",
+    };
+
+    /** SleepModeManager 候选（6.10.15 → 旧版本） */
+    private static final String[] SLEEP_MGR_CLASSES = {
+            "com.heytap.device.sleep.n",
+            "com.heytap.device.sleep.SleepModeManager",
+    };
+
+    /** 生理睡眠仓库候选（6.10.15 已整体移除，保留兼容；新版本走报文兜底） */
+    private static final String[] SLEEP_STATE_CLASSES = {
+            "com.heytap.device.data.sporthealth.repository.SleepStateRepository$Companion",
+            "com.heytap.device.data.sporthealth.repository.SleepStateRepository",
+    };
 
     private XposedInterface api;
 
@@ -76,124 +107,155 @@ public class Main extends XposedModule {
     /**
      * 手表睡眠模式开关。
      *
-     * SleepModeManager.onReceiveDeviceSleepModeData(SleepModelSettings)
-     * 里能拿到 isStartNow()，这是可靠的上报路径。
+     * 6.10.15: com.heytap.device.sleep.n#c(SleepModelSettings)
+     * 旧版本:  SleepModeManager#onReceiveDeviceSleepModeData(SleepModelSettings)
+     *
+     * 方法名会变，但参数类型 ...SleepModelSettings 稳定，其上的
+     * isStartNow() / getTimestamp() 也没有改。
      */
     private void hookSleepMode(ClassLoader cl) {
-        Class<?> c = load(cl, "com.heytap.device.sleep.SleepModeManager");
-        if (c == null) {
-            Logs.e("未找到睡眠模式相关类，可能版本不匹配", null);
-            return;
-        }
         int n = 0;
-        for (Method m : c.getDeclaredMethods()) {
-            if (!"onReceiveDeviceSleepModeData".equals(m.getName())) continue;
-            if (m.getParameterCount() != 1) continue;
+        for (String className : SLEEP_MGR_CLASSES) {
+            Class<?> c = load(cl, className);
+            if (c == null) continue;
 
-            api.hook(m).intercept(chain -> {
-                try {
-                    Object setting = chain.getArg(0);
-                    boolean startNow = bool(setting, "isStartNow");
-                    long ts = longVal(setting, "getTimestamp");
-                    Logs.fire("手表上报", "睡眠模式=" + (startNow ? "开" : "关")
-                            + "，时间 " + fmtTs(ts));
-                    State.setSleepMode(startNow ? 1 : 0, ts, true);
-                } catch (Throwable t) {
-                    Logs.e("解析睡眠模式失败", t);
-                }
-                return chain.proceed();
-            });
-            n++;
+            for (Method m : c.getDeclaredMethods()) {
+                if (m.getParameterCount() != 1) continue;
+                if (!m.getParameterTypes()[0].getName().endsWith("SleepModelSettings")) continue;
+                String name = m.getName();
+                if (!"c".equals(name) && !"onReceiveDeviceSleepModeData".equals(name)) continue;
+
+                api.hook(m).intercept(chain -> {
+                    try {
+                        Object setting = chain.getArg(0);
+                        boolean startNow = bool(setting, "isStartNow", "getStartNow");
+                        long ts = longVal(setting, "getTimestamp", "getTime");
+                        Logs.fire("手表上报", "睡眠模式=" + (startNow ? "开" : "关")
+                                + "，时间 " + fmtTs(ts));
+                        State.setSleepMode(startNow ? 1 : 0, ts, true);
+                    } catch (Throwable t) {
+                        Logs.e("解析睡眠模式失败", t);
+                    }
+                    return chain.proceed();
+                });
+                n++;
+                Logs.i("睡眠模式监听点：" + className + "#" + name);
+            }
         }
-        Logs.fire("监听", n > 0 ? "睡眠模式监听已就位" : "未找到睡眠模式接口");
+        Logs.fire("监听", n > 0 ? "睡眠模式监听已就位" : "未找到睡眠模式接口（版本可能不匹配）");
     }
 
     // ------------------------------------------------------------ 生理睡眠
 
     private void hookSleepState(ClassLoader cl) {
-        Class<?> c = load(cl,
-                "com.heytap.device.data.sporthealth.repository.SleepStateRepository$Companion");
-        if (c == null) {
-            Logs.e("未找到生理睡眠相关类，可能版本不匹配", null);
-            return;
-        }
         int n = 0;
-        for (Method m : c.getDeclaredMethods()) {
-            if (!"reportSleepState".equals(m.getName())) continue;
-            if (m.getParameterCount() != 2) continue;
+        for (String className : SLEEP_STATE_CLASSES) {
+            Class<?> c = load(cl, className);
+            if (c == null) continue;
 
-            api.hook(m).intercept(chain -> {
-                try {
-                    int state = ((Number) chain.getArg(0)).intValue();
-                    long ts = ((Number) chain.getArg(1)).longValue();
-                    Logs.fire("手表上报", "生理状态=" + (state == 1 ? "睡眠" : "清醒")
-                            + "，时间 " + fmtTs(ts));
-                    State.setSleepState(state, ts);
-                } catch (Throwable t) {
-                    Logs.e("解析生理睡眠失败", t);
-                }
-                return chain.proceed();
-            });
-            n++;
+            for (Method m : c.getDeclaredMethods()) {
+                if (!"reportSleepState".equals(m.getName())) continue;
+                if (m.getParameterCount() != 2) continue;
+
+                api.hook(m).intercept(chain -> {
+                    try {
+                        int state = ((Number) chain.getArg(0)).intValue();
+                        long ts = ((Number) chain.getArg(1)).longValue();
+                        Logs.fire("手表上报", "生理状态=" + (state == 1 ? "睡眠" : "清醒")
+                                + "，时间 " + fmtTs(ts));
+                        State.setSleepState(state, ts);
+                    } catch (Throwable t) {
+                        Logs.e("解析生理睡眠失败", t);
+                    }
+                    return chain.proceed();
+                });
+                n++;
+                Logs.i("生理睡眠监听点：" + className + "#reportSleepState");
+            }
         }
-        Logs.fire("监听", n > 0 ? "生理睡眠监听已就位" : "未找到生理睡眠接口");
+        Logs.fire("监听", n > 0 ? "生理睡眠监听已就位"
+                : "旧版生理睡眠接口不存在，改用报文 cid=0x20 兜底");
     }
 
     // ------------------------------------------------------------ 消息层兜底
 
     /**
-     * hook 所有手表消息。
+     * hook 所有手表消息（手表 → 手机）。
      *
-     * 主要作用：从 cid=0xcc 的 payload 里补睡眠模式状态（field3）。
-     * 实测这条消息在 App 主动读取时返回完整状态，是 onReceiveDeviceSleepModeData
-     * 之外的第二个来源。
+     * 主要作用：
+     *   - 报文计数（State.noteMessage）
+     *   - cid 0xcc / 0x49 的 field3(startNow) → 补睡眠模式状态
+     *   - cid 0x20（SleepStateChangeNotify）→ 补生理睡眠状态（6.10.15 的主要来源）
+     *
+     * 同一 MessageEvent 实例会经过多个 hook 点，按身份去重只处理一次。
      */
     private void hookMessages(ClassLoader cl) {
-        Class<?> c = load(cl, "com.heytap.health.devicemanager.btclient.BTClient");
-        if (c == null) {
-            Logs.e("未找到消息收发类，可能版本不匹配", null);
-            return;
-        }
         int n = 0;
-        for (Method m : c.getDeclaredMethods()) {
-            if (!"onMessageReceived".equals(m.getName())) continue;
-            if (m.getParameterCount() != 2) continue;
+        for (String className : CAPTURE_CLASSES) {
+            Class<?> c = load(cl, className);
+            if (c == null) continue;
 
-            api.hook(m).intercept(chain -> {
-                try {
-                    Object event = chain.getArg(1);
-                    if (event != null) {
-                        int sid = (int) call(event, "getServiceId");
-                        int cid = (int) call(event, "getCommandId");
-                        byte[] data = (byte[]) call(event, "getData");
-                        int len = data == null ? 0 : data.length;
-                        State.noteMessage(sid, cid, len);
+            for (Method m : c.getDeclaredMethods()) {
+                String name = m.getName();
+                if (!"onMessageReceived".equals(name) && !"onMessageEvent".equals(name)) continue;
+                if (m.getParameterCount() != 2) continue;
 
-                        // 0xcc / 0x49 = 读睡眠设置回包，field3 = startNow
-                        if (sid == 5 && (cid == 0xcc || cid == 0x49) && len >= 4) {
-                            int f3 = field3(data);
-                            if (f3 >= 0) {
-                                Logs.fire("消息层", "读到睡眠模式=" + (f3 == 1 ? "开" : "关"));
-                                State.setSleepMode(f3 == 1 ? 1 : 0,
-                                        System.currentTimeMillis() / 1000L, true);
-                            } else {
-                                Logs.i("消息层：这条数据不含睡眠模式状态");
+                int evIdx = paramIndexEndingWith(m, "MessageEvent");
+                if (evIdx < 0) continue;
+                final int evArg = evIdx;
+                final int macArg = evIdx == 0 ? 1 : 0;
+
+                api.hook(m).intercept(chain -> {
+                    try {
+                        Object event = chain.getArg(evArg);
+                        Object mac = chain.getArg(macArg);
+                        if (event != null && firstSight(event)) {
+                            int sid = (int) call(event, "getServiceId");
+                            int cid = (int) call(event, "getCommandId");
+                            byte[] data = (byte[]) call(event, "getData");
+                            int len = data == null ? 0 : data.length;
+                            State.noteMessage(sid, cid, len);
+
+                            // 0xcc / 0x49 = 读睡眠设置回包，field3 = startNow
+                            if (sid == 5 && (cid == 0xcc || cid == 0x49) && len >= 4) {
+                                int f3 = fieldOf(data, 3);
+                                if (f3 >= 0) {
+                                    Logs.fire("消息层", "读到睡眠模式=" + (f3 == 1 ? "开" : "关")
+                                            + "（mac=" + mac + "）");
+                                    State.setSleepMode(f3 == 1 ? 1 : 0,
+                                            System.currentTimeMillis() / 1000L, true);
+                                } else {
+                                    Logs.i("消息层：这条数据不含睡眠模式状态");
+                                }
+                            }
+
+                            // 0x20 = SleepStateChangeNotify：f1=startTime, f2=endTime, f3=state
+                            if (sid == 5 && cid == 0x20 && len >= 2) {
+                                int state = fieldOf(data, 3);
+                                int start = fieldOf(data, 1);
+                                if (state >= 0) {
+                                    Logs.fire("手表上报", "生理状态="
+                                            + (state == 1 ? "睡眠" : "清醒")
+                                            + "（来自报文 cid=0x20）");
+                                    State.setSleepState(state,
+                                            start > 0 ? start : System.currentTimeMillis() / 1000L);
+                                }
                             }
                         }
+                    } catch (Throwable t) {
+                        Logs.e("解析手表消息失败", t);
                     }
-                } catch (Throwable t) {
-                    Logs.e("解析手表消息失败", t);
-                }
-                return chain.proceed();
-            });
-            n++;
-            break;
+                    return chain.proceed();
+                });
+                n++;
+                Logs.i("消息监听点：" + className + "#" + name);
+            }
         }
-        Logs.fire("监听", n > 0 ? "手表消息监听已就位" : "未找到消息接口");
+        Logs.fire("监听", n > 0 ? "手表消息监听已就位" : "未找到消息接口（版本可能不匹配）");
     }
 
-    /** 取 protobuf 里 field3 的值，不存在返回 -1。 */
-    private int field3(byte[] d) {
+    /** 取 protobuf 里指定 varint 字段的值，不存在返回 -1。 */
+    private int fieldOf(byte[] d, int want) {
         int i = 0;
         while (i < d.length) {
             long tag = 0;
@@ -215,7 +277,7 @@ public class Main extends XposedModule {
                     if ((cur & 0x80) == 0) break;
                     shift += 7;
                 }
-                if (field == 3 && v <= 1) return (int) v;
+                if (field == want) return (int) v;
             } else if (wire == 2) {
                 long len = 0;
                 shift = 0;
@@ -238,6 +300,29 @@ public class Main extends XposedModule {
     }
 
     // ------------------------------------------------------------ 工具
+
+    /** 同一个 MessageEvent 实例只处理一次（多个 hook 点会重复看到它）。 */
+    private static final Map<Integer, Long> SEEN = new ConcurrentHashMap<>();
+    private static final long SEEN_WINDOW_MS = 2000L;
+
+    private static boolean firstSight(Object event) {
+        int id = System.identityHashCode(event);
+        long now = System.currentTimeMillis();
+        Long prev = SEEN.put(id, now);
+        if (SEEN.size() > 512) {
+            SEEN.entrySet().removeIf(e -> now - e.getValue() > SEEN_WINDOW_MS);
+        }
+        return prev == null || now - prev > SEEN_WINDOW_MS;
+    }
+
+    /** 返回参数中第一个以 suffix 结尾的类型下标，没有返回 -1。 */
+    private static int paramIndexEndingWith(Method m, String suffix) {
+        Class<?>[] ps = m.getParameterTypes();
+        for (int i = 0; i < ps.length; i++) {
+            if (ps[i] != null && ps[i].getName().endsWith(suffix)) return i;
+        }
+        return -1;
+    }
 
     private void warmup() {
         final android.os.Handler h =
@@ -278,21 +363,26 @@ public class Main extends XposedModule {
         return m.invoke(o);
     }
 
-    private static boolean bool(Object o, String name) {
-        try {
-            return Boolean.TRUE.equals(call(o, name));
-        } catch (Throwable t) {
-            return false;
+    private static Object call(Object o, String... names) {
+        if (o == null) return null;
+        for (String name : names) {
+            try {
+                return call(o, name);
+            } catch (Throwable ignored) {
+            }
         }
+        return null;
     }
 
-    private static long longVal(Object o, String name) {
-        try {
-            Object r = call(o, name);
-            if (r instanceof Long) return (Long) r;
-            if (r instanceof Integer) return ((Integer) r).longValue();
-        } catch (Throwable ignored) {
-        }
+    private static boolean bool(Object o, String... names) {
+        Object v = call(o, names);
+        return v instanceof Boolean && (Boolean) v;
+    }
+
+    private static long longVal(Object o, String... names) {
+        Object r = call(o, names);
+        if (r instanceof Long) return (Long) r;
+        if (r instanceof Integer) return ((Integer) r).longValue();
         return 0;
     }
 
