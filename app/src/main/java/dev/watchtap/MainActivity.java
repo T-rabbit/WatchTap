@@ -361,7 +361,9 @@ public class MainActivity extends Activity {
         }
 
         String msg = "当前版本：" + r.currentTag + "\n"
-                + "最新版本：" + r.latestTag + "\n\n"
+                + "最新版本：" + r.latestTag + "\n"
+                + (r.apkName.isEmpty() ? "" : "下载文件：" + r.apkName + "\n")
+                + "\n"
                 + (notes.isEmpty() ? "（无更新说明）" : notes);
 
         TextView tv = new TextView(this);

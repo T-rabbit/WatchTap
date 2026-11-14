@@ -13,6 +13,7 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -52,6 +53,7 @@ final class UpdateChecker {
         String currentTag = "";  // 当前版本
         String notes = "";       // 更新说明
         String apkUrl = "";      // APK 下载地址
+        String apkName = "";     // APK 文件名（便于确认下的是本模块）
         String error = "";       // 失败原因
 
         String describe() {
@@ -63,6 +65,9 @@ final class UpdateChecker {
             sb.append("当前版本：").append(currentTag).append('\n');
             sb.append("最新版本：").append(latestTag).append('\n');
             sb.append(hasUpdate ? "有更新可用" : "已是最新").append('\n');
+            if (hasUpdate && !apkName.isEmpty()) {
+                sb.append("下载文件：").append(apkName).append('\n');
+            }
             if (hasUpdate && !notes.isEmpty()) {
                 sb.append('\n').append(notes);
             }
@@ -159,18 +164,41 @@ final class UpdateChecker {
             r.latestTag = json.optString("tag_name", "");
             r.notes = json.optString("body", "");
 
-            // 找 APK 附件
+            // 找本模块的 APK 附件。
+            //
+            // 注意：Release 里可能同时挂着其它 APK（例如配套的 OPPO 健康安装包，
+            // 文件名 OPPOHealth-6.10.15_xxx.apk），而 GitHub API 返回的 assets
+            // 是按文件名排序的，直接取「第一个 .apk」会下错包。
+            // 所以必须按文件名挑：以 WatchTap 开头，且优先匹配与 tag 同版本号的那个。
+            String tagVersion = r.latestTag == null ? "" : r.latestTag.replaceFirst("^[vV]", "");
+            String bestUrl = "";
+            int bestScore = -1;
             JSONArray assets = json.optJSONArray("assets");
             if (assets != null) {
                 for (int i = 0; i < assets.length(); i++) {
                     JSONObject a = assets.optJSONObject(i);
                     if (a == null) continue;
                     String name = a.optString("name", "");
-                    if (name.toLowerCase().endsWith(".apk")) {
-                        r.apkUrl = a.optString("browser_download_url", "");
-                        break;
+                    String lower = name.toLowerCase(Locale.ROOT);
+                    if (!lower.endsWith(".apk")) continue;
+
+                    int score = 0;
+                    if (lower.startsWith("watchtap")) score += 100;
+                    else if (lower.contains("watchtap")) score += 50;
+                    else continue;                              // 不是本模块的包，直接跳过
+                    if (!tagVersion.isEmpty() && name.contains(tagVersion)) score += 20;
+
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestUrl = a.optString("browser_download_url", "");
+                        r.apkName = name;
                     }
                 }
+            }
+            r.apkUrl = bestUrl;
+            if (r.apkUrl.isEmpty()) {
+                // 宁可提示错误，也不要让用户下到别的安装包
+                r.error = "Release 里没有找到 WatchTap 的 APK 附件";
             }
 
             r.ok = true;
