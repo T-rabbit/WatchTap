@@ -568,3 +568,50 @@ export BUILD_TOOLS=<build-tools>
 
 签名沿用仓库统一的 `watchtap.jks`（证书 SHA-256 `e9f5acff766040b1…`），与 v2.20.0
 及历史版本一致，**可直接覆盖安装**，无需卸载。
+
+---
+
+## 手机闹钟联动（v2.20.3 新增）
+
+### 背景：原版只认 ColorOS 闹钟
+
+```
+ColorOS 闹钟 App
+  └─ 广播 com.coloros.platformalarmclock.platform.awaken_clock_action
+       └─ PlatformClockBroadcastReceiver
+            └─ j5.c（PlatformClockManager）bindService → com.coloros.alarmclock
+                 └─ AIDL IClockUpdateAidlInterface#alarmClockRing(PlatformClockInfo)
+                      └─ com.heytap.wearable.watch.clock.manager.d#alarmClockRing  ← 下发手表
+```
+HyperOS 上没有 `com.coloros.alarmclock`，第一步就断，整条链路失效。
+
+### 本模块的做法（AlarmLink）
+
+1. `AlarmManager.getNextAlarmClock()` 读出手机真实闹钟（宿主 App 有 SCHEDULE_EXACT_ALARM）
+2. 用 `setAlarmClock()` 在同一时刻排一个「代理闹钟」（精确、无窗口）
+3. 代理闹钟到点 → 构造 `PlatformClockInfo`（时间 / 标签 / `mIsGarbAlarm=false` / `snoozeTime=5`）
+   → 反射调用 App 自己的 `d#alarmClockRing()`，由 App 用它自己的加密通道发给手表
+4. 手表回传动作（实测报文）：
+   - `sid=10 cid=24` = 关闭 → 取消代理闹钟 + 发通知提醒手动关手机闹钟
+   - `sid=10 cid=25` = 稍后提醒（固定 5 分钟）→ 重排代理闹钟
+
+> 为什么必须注入而不是用接口：ColorOS 的 AIDL 服务在 HyperOS 不存在；广播被签名级权限
+> `com.coloros.alarmclock.permission.ACCESS_CLOCK_RECEIVER_PLATFORM` 挡住；
+> App 的闹钟组件未导出；OPPO linkservice SDK 没有闹钟 API，且 `MessageEvent`
+> 的 `mEncryptOption` 说明报文是加密的，第三方无法自行构造。
+
+### 调试
+
+```bash
+# 手动触发一次「手机闹钟」（不响铃）
+adb shell am broadcast -a dev.watchtap.DEBUG_ALARM --el t $(date +%s%3N) -p com.heytap.health
+# 诊断日志（宿主 App 自己目录，不需要 root）
+adb shell su -c 'cat /sdcard/Android/data/com.heytap.health/files/alarmlink.log'
+```
+
+开关：`Prefs.K_ALARM_LINK`（`alarmLink`，默认开启）。
+
+### 已知限制
+
+- HyperOS 无法取消系统闹钟：手表点「关闭」只会取消本模块的代理闹钟并提示你手动关手机闹钟
+- 手表侧「稍后提醒」固定 5 分钟（实测固件行为）

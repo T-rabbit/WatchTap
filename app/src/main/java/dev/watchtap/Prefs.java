@@ -47,6 +47,9 @@ final class Prefs {
     /** 是否修复「睡眠模式联动免打扰」开关的显示 */
     static final String K_FIX_SWITCH = "fixSwitch";
 
+    /** 手机闹钟 → 手表 联动（默认开） */
+    static final String K_ALARM_LINK = "alarmLink";
+
     private Prefs() {}
 
     /** 本进程自己的偏好文件。 */

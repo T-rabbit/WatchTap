@@ -91,6 +91,13 @@ public class Main extends XposedModule {
             Logs.e("开关修复安装失败", t);
         }
 
+        // 手机闹钟 → 手表 联动（HyperOS 上绕过 ColorOS 平台闹钟服务）
+        try {
+            AlarmLink.install(this, cl);
+        } catch (Throwable t) {
+            Logs.e("闹钟联动安装失败", t);
+        }
+
         warmup();
     }
 
@@ -100,6 +107,7 @@ public class Main extends XposedModule {
         Logs.fire("模块", "OPPO 健康已就绪");
         State.attach(appCtx());
         State.syncZen();
+        AlarmLink.attach(appCtx());
     }
 
     // ------------------------------------------------------------ 睡眠模式
@@ -336,6 +344,7 @@ public class Main extends XposedModule {
                 if (c != null) {
                     State.attach(c);
                     State.syncZen();
+                    AlarmLink.attach(c);
                     Logs.i("已连接到 OPPO 健康进程");
                     return;
                 }

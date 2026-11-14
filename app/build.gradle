@@ -10,8 +10,8 @@ android {
         applicationId "dev.watchtap"
         minSdk 31
         targetSdk 34
-        versionCode 24
-        versionName "2.20.2"
+        versionCode 26
+        versionName "2.20.3"
     }
 
     buildTypes {
