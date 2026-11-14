@@ -241,6 +241,25 @@ final class AlarmLink {
                     String a = i == null ? null : i.getAction();
                     dbg("onReceive action=" + a);
                     if (ACTION_DEBUG.equals(a)) {
+                        if (i.getBooleanExtra("unmute", false)) {
+                            try {
+                                android.media.AudioManager am = (android.media.AudioManager)
+                                        sCtx.getSystemService(Context.AUDIO_SERVICE);
+                                am.adjustStreamVolume(android.media.AudioManager.STREAM_ALARM,
+                                        android.media.AudioManager.ADJUST_UNMUTE, 0);
+                                am.setStreamVolume(android.media.AudioManager.STREAM_ALARM,
+                                        i.getIntExtra("vol", 8), 0);
+                                dbg("debug unmute done");
+                            } catch (Throwable t) {
+                                dbg("debug unmute failed: " + t);
+                            }
+                            return;
+                        }
+                        if (i.getBooleanExtra("mute", false)) {
+                            dbg("debug mute alarm stream");
+                            muteAlarmStream(i.getIntExtra("restoreSec", 0));
+                            return;
+                        }
                         long t = i.getLongExtra("t", System.currentTimeMillis());
                         Logs.fire("闹钟联动", "调试触发：模拟手机闹钟 t=" + t);
                         dbg("debug trigger t=" + t);
@@ -299,9 +318,12 @@ final class AlarmLink {
     /** 手表点「关闭」：取消代理闹钟，并提示用户在手机上关掉。 */
     static void onWatchDismiss() {
         dbg("watch action: DISMISS");
-        Logs.fire("闹钟联动", "手表已关闭闹钟（手机端闹钟需手动关闭）");
+        Logs.fire("闹钟联动", "手表已关闭闹钟 → 直接关闭系统闹钟");
         cancelProxy();
-        notify("手表已关闭闹钟", "手机闹钟仍在响，请手动关闭");
+        boolean viaClock = requestClock(ClockChannel.OP_DISMISS);
+        boolean viaMi = requestMiFitness(MiFitnessAlarm.OP_DISMISS);
+        boolean dismissed = viaClock || viaMi || dismissSystemAlarm();
+        notify("手表已关闭闹钟", dismissed ? "已关闭手机闹钟" : "关闭失败，请手动关闭手机闹钟");
     }
 
     /** 手表点「稍后提醒」：固定 5 分钟后再次下发。 */
@@ -310,7 +332,43 @@ final class AlarmLink {
         dbg("watch action: SNOOZE -> " + fmt(when));
         Logs.fire("闹钟联动", "手表已稍后提醒，5 分钟后再次提醒");
         scheduleProxyAt(when);
+        requestClock(ClockChannel.OP_SNOOZE);
+        requestMiFitness(MiFitnessAlarm.OP_SNOOZE);
         notify("已稍后提醒", "5 分钟后（" + fmt(when) + "）再次提醒手表");
+    }
+
+    /** 请求系统时钟进程（模块注入在时钟里，走它自己的关闭逻辑）。 */
+    private static boolean requestClock(String op) {
+        try {
+            Context c = sCtx;
+            if (c == null) return false;
+            Intent i = new Intent(ClockChannel.ACTION_REQUEST);
+            i.setPackage("com.android.deskclock");
+            i.putExtra(ClockChannel.EXTRA_OP, op);
+            c.sendBroadcast(i);
+            dbg("requestClock: " + op);
+            return true;
+        } catch (Throwable t) {
+            dbg("requestClock failed: " + t);
+            return false;
+        }
+    }
+
+    /** 请求小米运动健康进程，用时钟控制台通道关闭/稍后闹钟。 */
+    private static boolean requestMiFitness(String op) {
+        try {
+            Context c = sCtx;
+            if (c == null) return false;
+            Intent i = new Intent(MiFitnessAlarm.ACTION_REQUEST);
+            i.setPackage("com.mi.health");
+            i.putExtra(MiFitnessAlarm.EXTRA_OP, op);
+            c.sendBroadcast(i);
+            dbg("requestMiFitness: " + op);
+            return true;
+        } catch (Throwable t) {
+            dbg("requestMiFitness failed: " + t);
+            return false;
+        }
     }
 
     /** 在指定时刻排代理闹钟。 */
@@ -329,6 +387,145 @@ final class AlarmLink {
             dbg("proxy scheduled at " + fmt(when));
         } catch (Throwable t) {
             dbg("scheduleProxyAt failed: " + t);
+        }
+    }
+
+    /**
+     * 真正关闭系统闹钟。
+     *
+     * 系统时钟（com.android.deskclock）的 AlarmReceiver 监听
+     *   action.alarm_cancel / action.snooze_cancel
+     * 但受 miui.permission.ACCESS_ALARM_RECEIVER 保护，普通应用发不进去。
+     * 设备有 root（KernelSU）时用 su 发送即可。
+     */
+    static boolean dismissSystemAlarm() {
+        String[] cmds = {
+                "am broadcast -a action.alarm_cancel -n com.android.deskclock/com.android.deskclock.AlarmReceiver",
+                "am broadcast -a android.intent.action.DISMISS_ALARM -n com.android.deskclock/com.android.deskclock.AlarmReceiver",
+        };
+        for (String c : cmds) {
+            try {
+                String out = Root.exec(c, 5000);
+                dbg("dismiss: " + c + " -> " + (out == null ? "" : out.trim().replace('\n', ' ')));
+                if (out != null && out.contains("Broadcast completed")) return true;
+            } catch (Throwable t) {
+                dbg("dismiss error: " + t);
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 通过界面点击真正关闭响铃中的闹钟。
+     *
+     * HyperOS 没有任何关闭闹钟的系统接口（cmd alarm 无 dismiss，
+     * action.alarm_cancel 需要 Alarm parcelable 额外参数，DISMISS_ALARM 是空实现），
+     * 所以只能：唤醒屏幕 → 确认前台确实是闹钟界面 → 找到「关闭」按钮 → input tap。
+     * 任一步不满足就放弃，绝不盲点。
+     */
+    static boolean dismissViaUi() {
+        try {
+            Root.exec("input keyevent KEYCODE_WAKEUP", 4000);
+
+            String top = Root.exec(
+                    "dumpsys activity activities | grep -m1 topResumedActivity", 6000);
+            if (top == null || !top.contains("AlarmAlertFullScreenActivity")) {
+                dbg("dismissViaUi: 前台不是闹钟界面，放弃");
+                return false;
+            }
+
+            Root.exec("uiautomator dump /sdcard/dc_alarm.xml", 15000);
+            String xml = Root.exec("cat /sdcard/dc_alarm.xml", 8000);
+            if (xml == null || !xml.contains("bounds")) return false;
+
+            int[] xy = findDismissPoint(xml);
+            if (xy == null) {
+                dbg("dismissViaUi: 没找到关闭按钮");
+                return false;
+            }
+            Root.exec("input tap " + xy[0] + " " + xy[1], 5000);
+            dbg("dismissViaUi: tapped " + xy[0] + "," + xy[1]);
+            return true;
+        } catch (Throwable t) {
+            dbg("dismissViaUi error: " + t);
+            return false;
+        }
+    }
+
+    /** 在 uiautomator dump 里找「关闭/Dismiss」节点，返回中心坐标。 */
+    private static int[] findDismissPoint(String xml) {
+        String[] keywords = {"关闭", "Dismiss", "dismiss", "停止"};
+        for (String kw : keywords) {
+            int idx = 0;
+            while (true) {
+                int t = xml.indexOf(kw, idx);
+                if (t < 0) break;
+                idx = t + kw.length();
+                int nodeStart = xml.lastIndexOf("<node", t);
+                int nodeEnd = xml.indexOf(">", t);
+                if (nodeStart < 0 || nodeEnd < 0) continue;
+                String node = xml.substring(nodeStart, nodeEnd);
+                int b = node.indexOf("bounds=\"[");
+                if (b < 0) continue;
+                int e = node.indexOf("]", b);
+                if (e < 0) continue;
+                String[] parts = node.substring(b + 9, e).split("][");
+                if (parts.length != 2) continue;
+                try {
+                    String[] p1 = parts[0].split(",");
+                    String[] p2 = parts[1].split(",");
+                    int x1 = Integer.parseInt(p1[0].trim()), y1 = Integer.parseInt(p1[1].trim());
+                    int x2 = Integer.parseInt(p2[0].trim()), y2 = Integer.parseInt(p2[1].trim());
+                    return new int[]{(x1 + x2) / 2, (y1 + y2) / 2};
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 静音闹钟音频流。
+     *
+     * 宿主 App（OPPO 健康）持有 android.permission.MODIFY_AUDIO_SETTINGS（已授予），
+     * 所以在它进程内可以直接把 STREAM_ALARM 调到 0；到时间自动恢复原音量。
+     *
+     * @param restoreAfterSec 多少秒后恢复，<=0 表示不恢复
+     * @return 是否成功静音
+     */
+    static boolean muteAlarmStream(int restoreAfterSec) {
+        try {
+            Context c = sCtx;
+            if (c == null) return false;
+            final android.media.AudioManager am =
+                    (android.media.AudioManager) c.getSystemService(Context.AUDIO_SERVICE);
+            if (am == null) return false;
+
+            final int old = am.getStreamVolume(android.media.AudioManager.STREAM_ALARM);
+            if (old == 0) return true;
+            // HyperOS 把闹钟流限制在最小 1，单纯 setStreamVolume(0) 只会变小，
+            // 所以再补一次 ADJUST_MUTE（需要 MODIFY_AUDIO_SETTINGS，宿主 App 已授予）
+            am.setStreamVolume(android.media.AudioManager.STREAM_ALARM, 0, 0);
+            am.adjustStreamVolume(android.media.AudioManager.STREAM_ALARM,
+                    android.media.AudioManager.ADJUST_MUTE, 0);
+            dbg("alarm stream muted (was " + old + ")");
+            Logs.fire("闹钟联动", "已静音闹钟（原音量 " + old + "）");
+
+            if (restoreAfterSec > 0) {
+                new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                    try {
+                        am.adjustStreamVolume(android.media.AudioManager.STREAM_ALARM,
+                                android.media.AudioManager.ADJUST_UNMUTE, 0);
+                        am.setStreamVolume(android.media.AudioManager.STREAM_ALARM, old, 0);
+                        dbg("alarm stream restored to " + old);
+                    } catch (Throwable ignored) {
+                    }
+                }, restoreAfterSec * 1000L);
+            }
+            return true;
+        } catch (Throwable t) {
+            dbg("mute failed: " + t);
+            return false;
         }
     }
 

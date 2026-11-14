@@ -60,6 +60,24 @@ public class Main extends XposedModule {
 
     @Override
     public void onPackageLoaded(XposedModuleInterface.PackageLoadedParam p) {
+        // 系统时钟进程：在这里才能真正关掉响铃中的闹钟
+        if ("com.android.deskclock".equals(p.getPackageName())) {
+            try {
+                ClockChannel.install(this, p.getDefaultClassLoader());
+            } catch (Throwable t) {
+                Logs.e("时钟通道安装失败", t);
+            }
+            return;
+        }
+        // 小米运动健康进程：装上「借用时钟控制台通道」的实现
+        if ("com.mi.health".equals(p.getPackageName())) {
+            try {
+                MiFitnessAlarm.install(this, p.getDefaultClassLoader());
+            } catch (Throwable t) {
+                Logs.e("闹钟通道安装失败", t);
+            }
+            return;
+        }
         if (!PKG.equals(p.getPackageName())) return;
         Logs.fire("模块", "开始接管 OPPO 健康");
 

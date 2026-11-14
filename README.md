@@ -613,5 +613,10 @@ adb shell su -c 'cat /sdcard/Android/data/com.heytap.health/files/alarmlink.log'
 
 ### 已知限制
 
-- HyperOS 无法取消系统闹钟：手表点「关闭」只会取消本模块的代理闹钟并提示你手动关手机闹钟
-- 手表侧「稍后提醒」固定 5 分钟（实测固件行为）
+- 关闭/稍后由**系统时钟进程**内完成（模块注入 `com.android.deskclock`）：
+  取 `AlarmService.onStartCommand` 里 `intent.extra.alarm_raw` 解析出的 Alarm，
+  调 `AlarmHelper.stopAlarmKlaxon()` + `clearAlarmAlertNotification()` +
+  `tryDeleteOneshotAlarm()` + `stopService()`，实测闹钟服务计数 3 → 0，铃声停止
+- 为什么不用小米运动健康：其 console 通道虽能关闹钟，但装上后会接管响铃（手机不再本机响），
+  且时钟里 `HEALTH_PKG_NAME` 写死 `com.mi.health`，OPPO 健康无法顶替
+- 新增作用域 `com.android.deskclock`，**升级后需重启一次设备**才会生效
