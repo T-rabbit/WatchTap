@@ -527,17 +527,18 @@ MIT
 
 ---
 
-## 适配记录：OPPO 健康 6.10.15（v2.20.0-61015）
+## 适配记录：OPPO 健康 6.10.15（v2.20.1）
 
-本构建基于 **v2.20.0**（main HEAD `eacbbd0`），只改两个文件，其余功能
-（勿扰写入、开关修复通道、更新检查、通知、日志/历史等）原样保留。
+本构建基于 **v2.20.0** 源码（main HEAD `eacbbd0`），只改两个文件，
+其余功能（勿扰写入、开关修复通道、更新检查、通知、日志/历史等）原样保留。
+**已在 HyperOS 真机验证通过**，适配目标为 OPPO 健康 **6.10.15**（构建号 `9e2a81e`）。
 
 ### 改动一：Main.java —— 三个采集点
 
 | 采集点 | v2.20.0 原目标 | 6.10.15 实际位置 |
 |---|---|---|
 | 手表睡眠模式 | `device.sleep.SleepModeManager#onReceiveDeviceSleepModeData` | **`device.sleep.n#c(SleepModelSettings)`**（类 `n` 的 TAG 字段仍是 "SleepModeManager"） |
-| 生理睡眠 | `...sporthealth.repository.SleepStateRepository$Companion#reportSleepState` | 该包整体删除 → 改解析报文 **cid=0x20**（`FitnessProto$SleepStateChangeNotify`：f1=startTime、f3=state） |
+| 生理睡眠 | `...sporthealth.repository.SleepStateRepository$Companion#reportSleepState` | 该包整体删除 → 解析报文 **cid=0x20**（`FitnessProto$SleepStateChangeNotify`：f1=startTime、f3=state） |
 | 全量报文 | `...btclient.BTClient#onMessageReceived` | **`xs.e#onMessageReceived`**（线程池 tag 仍是 "BTClient"，`(sid,cid)=(-1,-1)` 通配注册）+ 兜底 `LM3Message$mMessageCallback$1#onMessageEvent` |
 
 ### 改动二：SwitchFixer.java —— 开关可见性
@@ -550,28 +551,20 @@ MIT
 `D0()` 全 APK 只有 1 个 UI 调用点，比 `v.g()`（12 处调用）精准，因此优先 hook `D0()`，
 同时保留 `v.g()` 兼容。两者都受运行时开关 `State.fixSwitchEnabled()` 控制。
 
-### 静态核对（目标 APK 内签名）
+### 兼容性
 
-```
-xs.e#onMessageReceived(String, MessageEvent)V                     ✓
-LM3Message$mMessageCallback$1#onMessageEvent(String, MessageEvent)V ✓
-device.sleep.n#c(SleepModelSettings)V   /  n#b(IZ)V               ✓
-device.sleep.e#a(Z)V / #b()Z                                      ✓
-SleepDataServiceImpl#D0()Z                                        ✓
-base.app.v#g()I                                                   ✓
-```
+采集点改为「候选类名 + 参数类型特征匹配 + 报文实例去重」，
+旧版本 OPPO 健康仍然可用（自动回退旧类名）。
 
-### ⚠️ 签名
-
-本构建用脚本自动生成的 `watchtap.jks`（SHA-256 `0e4d34c6…`）。
-**官方 v2.20.0 的签名是 `e9f5acff…`，两者不同**，无法直接覆盖安装：
+### 构建与签名
 
 ```bash
-adb uninstall dev.watchtap      # 会清掉模块设置与日志
-adb install WatchTap-v2.20.0-oppohealth-6.10.15.apk
-# 之后在 LSPosed 里重新勾选作用域：OPPO 健康
+export JAVA_HOME=<JDK21>
+export ANDROID_JAR=<android-35>/android.jar
+export API_JAR=<libxposed api 102>/classes.jar
+export BUILD_TOOLS=<build-tools>
+./build_apk.sh release     # → build/watchtap-release.apk
 ```
 
-若你能提供官方发布用的 `watchtap.jks`，放本目录重跑 `build_apk.sh release` 即可保持同一签名。
-
-> 未连接设备，运行时行为未实测；以上为静态签名核对 + 调用链推导。
+签名沿用仓库统一的 `watchtap.jks`（证书 SHA-256 `e9f5acff766040b1…`），与 v2.20.0
+及历史版本一致，**可直接覆盖安装**，无需卸载。
