@@ -93,6 +93,24 @@ public class StateStore extends ContentProvider {
         return c.getSharedPreferences(PREF, Context.MODE_PRIVATE);
     }
 
+    /**
+     * 确保 ProviderPrefs 里有这个键：没有就从 App 的 Prefs 读一次并写进去。
+     * 这样 hook 进程任何时候来读都能拿到正确值，不依赖 UI 是否已经打开过。
+     */
+    private boolean ensureBool(android.content.SharedPreferences pp,
+                               String key, boolean def) {
+        try {
+            if (pp.contains(key)) return pp.getBoolean(key, def);
+            Context c = getContext();
+            if (c == null) return def;
+            boolean v = Prefs.getBool(c, key, def);
+            pp.edit().putBoolean(key, v).apply();
+            return v;
+        } catch (Throwable t) {
+            return def;
+        }
+    }
+
     @Override
     public Bundle call(String method, String arg, Bundle extras) {
         try {
@@ -130,6 +148,8 @@ public class StateStore extends ContentProvider {
             if (extras.containsKey(K_FIX_SWITCH)) {
                 e.putBoolean(K_FIX_SWITCH, extras.getBoolean(K_FIX_SWITCH, false));
                 e.putBoolean(K_ALARM_SYNC, extras.getBoolean(K_ALARM_SYNC, true));
+                e.putBoolean(K_NOTIFY, extras.getBoolean(K_NOTIFY, false));
+                e.putBoolean(K_MUTE, extras.getBoolean(K_MUTE, false));
             }
             putLongIfPresent(extras, e, K_ZEN_TS);
             putLongIfPresent(extras, e, K_UPDATED);
@@ -161,10 +181,16 @@ public class StateStore extends ContentProvider {
             b.putLong(K_SLEEP_MODE_TS, p.getLong(K_SLEEP_MODE_TS, 0));
             b.putLong(K_SLEEP_MODE_AT, p.getLong(K_SLEEP_MODE_AT, 0));
             b.putInt(K_ZEN, p.getInt(K_ZEN, -1));
-            b.putBoolean(K_MUTE, p.getBoolean(K_MUTE, true));
-            b.putBoolean(K_NOTIFY, p.getBoolean(K_NOTIFY, false));
+            // ProviderPrefs 是 UI 显式写入的权威值。
+            // 但 App 重装后它是空的，而 hook 进程往往先于 UI 启动，
+            // 所以这里做一次「自举」：缺哪个就从 App 自己的 Prefs 补哪个（同进程可直读）。
+            android.content.SharedPreferences pp = ProviderPrefs.get(getContext());
+            boolean muteV = ensureBool(pp, Prefs.K_MUTE, false);
+            boolean notifyV = ensureBool(pp, Prefs.K_NOTIFY, false);
+            b.putBoolean(K_MUTE, muteV);
+            b.putBoolean(K_NOTIFY, notifyV);
             b.putBoolean(K_FIX_SWITCH, p.getBoolean(K_FIX_SWITCH, false));
-            b.putBoolean(K_ALARM_SYNC, p.getBoolean(K_ALARM_SYNC, true));
+            b.putBoolean(K_ALARM_SYNC, ensureBool(pp, Prefs.K_ALARM_SYNC, true));
             b.putLong(K_ZEN_TS, p.getLong(K_ZEN_TS, 0));
             b.putLong(K_UPDATED, p.getLong(K_UPDATED, 0));
             b.putString(K_COUNTS, p.getString(K_COUNTS, ""));

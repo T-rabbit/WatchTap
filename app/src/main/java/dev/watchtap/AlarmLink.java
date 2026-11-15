@@ -52,6 +52,9 @@ final class AlarmLink {
     /** 调试用：adb shell am broadcast -a dev.watchtap.DEBUG_ALARM --el t <毫秒时间戳> */
     static final String ACTION_DEBUG = "dev.watchtap.DEBUG_ALARM";
 
+    /** 调试用（只测通知，绝不触发任何闹钟推送） */
+    static final String ACTION_NOTIFY_TEST = "dev.watchtap.DEBUG_NOTIFY";
+
     private static volatile Object sCtrl;
     private static volatile Class<?> sCtrlCls;
     private static volatile Context sCtx;
@@ -240,6 +243,21 @@ final class AlarmLink {
                 public void onReceive(Context c, Intent i) {
                     String a = i == null ? null : i.getAction();
                     dbg("onReceive action=" + a);
+                    if (ACTION_NOTIFY_TEST.equals(a)) {
+                        boolean on = !"off".equalsIgnoreCase(
+                                String.valueOf(i.getStringExtra("state")));
+                        boolean pref = State.notifyPref();
+                        dbg("NOTIFY-TEST state=" + (on ? "asleep" : "awake")
+                                + " notifyPref=" + pref);
+                        Logs.fire("通知测试", "开关=" + pref + " 状态=" + (on ? "asleep" : "awake"));
+                        if (pref) {
+                            State.debugNotify(on);
+                            Logs.fire("通知测试", "已调用 WatchNotify.send");
+                        } else {
+                            Logs.w("通知开关为关，未发送（请到 App 里打开「通知其他应用」）", null);
+                        }
+                        return;
+                    }
                     if (ACTION_DEBUG.equals(a)) {
                         if (i.getBooleanExtra("unmute", false)) {
                             try {
@@ -283,6 +301,7 @@ final class AlarmLink {
 
             IntentFilter f = new IntentFilter();
             f.addAction(ACTION_DEBUG);
+            f.addAction(ACTION_NOTIFY_TEST);
             f.addAction(AlarmManager.ACTION_NEXT_ALARM_CLOCK_CHANGED);
             f.addAction(ProxyReceiver.ACTION_PROXY);
             if (Build.VERSION.SDK_INT >= 33) {

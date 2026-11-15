@@ -208,15 +208,27 @@ final class State {
     }
 
     static boolean mutePref() {
-        // 直接读共享文件，完全不依赖 provider 进程。
-        // 文件路径见 Prefs.candidates()，hook 进程和模块进程各写一份。
         Context c = ctx();
-        // 默认 false：读不到偏好时宁可不静音，也不要误静音。
-        // 之前默认 true，只要文件读失败就会静默变成完全静音，
-        // 这正是「同步静音关着却仍然静音」的来源之一。
-        sMutePref = Prefs.getBool(c, Prefs.K_MUTE, false);
-        sNotifyPref = Prefs.getBool(c, Prefs.K_NOTIFY, false);
+        // hook 进程跨 uid 读不到模块 App 的 prefs 文件（实测），
+        // 所以统一走模块自己的 ContentProvider；provider 不在时再退回文件读取。
+        Boolean mute = readPrefFromProvider(c, Prefs.K_MUTE);
+        Boolean notify = readPrefFromProvider(c, Prefs.K_NOTIFY);
+        sMutePref = mute != null ? mute : Prefs.getBool(c, Prefs.K_MUTE, false);
+        sNotifyPref = notify != null ? notify : Prefs.getBool(c, Prefs.K_NOTIFY, false);
         return sMutePref;
+    }
+
+    /** 从模块 provider 读一个布尔偏好，读不到返回 null。 */
+    private static Boolean readPrefFromProvider(Context c, String key) {
+        if (c == null) return null;
+        try {
+            android.os.Bundle b = c.getContentResolver().call(
+                    StateStore.URI, StateStore.METHOD_GET, null, null);
+            if (b == null || !b.containsKey(key)) return null;
+            return b.getBoolean(key, false);
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     /** 读取「发送通知」偏好。 */
@@ -231,6 +243,16 @@ final class State {
      * hook 进程（com.heytap.health）发通知会显示成 OPPO 健康的通知，
      * 自动化软件不好识别。所以通过 provider 让模块进程发。
      */
+    /** 调试入口：直接发一条通知（不做状态判断）。 */
+    static void debugNotify(boolean on) {
+        Context c = ctx();
+        if (c == null) {
+            Logs.e("调试通知失败：拿不到上下文", null);
+            return;
+        }
+        WatchNotify.send(c, on);
+    }
+
     static void maybeNotify(boolean on) {
         if (!notifyPref()) {
             Logs.i("通知开关已关闭，跳过发送");

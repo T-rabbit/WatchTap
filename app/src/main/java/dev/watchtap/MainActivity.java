@@ -529,6 +529,11 @@ public class MainActivity extends Activity {
         boolean notify = Prefs.getBool(this, Prefs.K_NOTIFY, false);
         boolean alarmSync = Prefs.getBool(this, Prefs.K_ALARM_SYNC, true);
         if (mAlarmSyncSwitch != null) mAlarmSyncSwitch.setChecked(alarmSync);
+
+        // 把开关值回填给 provider（hook 进程靠它读取，跨 uid 读文件不可靠）
+        ProviderPrefs.setBoolean(this, Prefs.K_NOTIFY, notify);
+        ProviderPrefs.setBoolean(this, Prefs.K_MUTE, mute);
+        ProviderPrefs.setBoolean(this, Prefs.K_ALARM_SYNC, alarmSync);
         if (mNotifySwitch.isChecked() != notify) {
             mNotifySwitch.setOnCheckedChangeListener(null);
             mNotifySwitch.setChecked(notify);
@@ -776,6 +781,7 @@ public class MainActivity extends Activity {
     /** 保存「通知其他应用」偏好。 */
     private void saveNotifyPref(boolean on) {
         Prefs.setBool(this, Prefs.K_NOTIFY, on);
+        ProviderPrefs.setBoolean(this, Prefs.K_NOTIFY, on);
         HookPrefsChannel.push(Prefs.K_NOTIFY, on);
         StateStore.logLocal(this, "通知其他应用：" + (on ? "已开启" : "已关闭"));
         if (on) {
@@ -786,6 +792,7 @@ public class MainActivity extends Activity {
     /** 保存「手机闹钟同步」偏好。 */
     private void saveAlarmSyncPref(boolean on) {
         Prefs.setBool(this, Prefs.K_ALARM_SYNC, on);
+        ProviderPrefs.setBoolean(this, Prefs.K_ALARM_SYNC, on);
         HookPrefsChannel.push(Prefs.K_ALARM_SYNC, on);
         pushAlarmSyncToProvider(on);
         StateStore.logLocal(this, "手机闹钟同步：" + (on ? "已开启" : "已关闭"));
@@ -809,6 +816,7 @@ public class MainActivity extends Activity {
     /** 保存「同步静音」偏好。 */
     private void saveMutePref(boolean mute) {
         Prefs.setBool(this, Prefs.K_MUTE, mute);
+        ProviderPrefs.setBoolean(this, Prefs.K_MUTE, mute);
         HookPrefsChannel.push(Prefs.K_MUTE, mute);
         StateStore.logLocal(this, "同步静音：" + (mute ? "已开启" : "已关闭"));
     }
