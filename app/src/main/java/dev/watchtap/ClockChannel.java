@@ -43,6 +43,9 @@ final class ClockChannel {
     private static volatile ClassLoader sCl;
     /** 响铃界面实例（稍后提醒需要走它自己的 onSnooze） */
     private static volatile Object sActivity;
+    /** 去重：同一动作 3 秒内只处理一次（多个进程/多次广播会重复进来） */
+    private static volatile long sLastActionAt;
+    private static volatile String sLastActionKey = "";
 
     /** 诊断日志：写系统时钟自己的外部目录。 */
     private static void dbg(String msg) {
@@ -226,6 +229,17 @@ final class ClockChannel {
         Context c = sCtx;
         if (c == null) { dbg("no ctx"); return; }
 
+        // 去重只看「动作 + 时间窗」，不看 Alarm 对象身份
+        // （同一个闹钟可能被解析成不同实例，或被多次广播）
+        String key = snooze ? "snooze" : "dismiss";
+        long now = System.currentTimeMillis();
+        if (key.equals(sLastActionKey) && now - sLastActionAt < 5000L) {
+            dbg("skip duplicate action=" + key + " (" + (now - sLastActionAt) + "ms)");
+            return;
+        }
+        sLastActionKey = key;
+        sLastActionAt = now;
+
         // 稍后提醒：优先走响铃界面自己的 onSnooze()（会把闹钟推后并重新排期）
         if (snooze) {
             Object act = sActivity;
@@ -241,12 +255,13 @@ final class ClockChannel {
                     dbg("onSnooze failed: " + t);
                 }
             } else {
-                dbg("no alarm activity, scheduling +5min instead");
-                if (scheduleIn5Minutes(c)) {
-                    dismissOnly(c);
-                    Logs.fire("时钟通道", "已稍后提醒：手机闹钟已在 5 分钟后重排");
+                dbg("no alarm activity, sending alarm_snooze broadcast");
+                if (snoozeViaBroadcast(c)) {
+                    // provider 已经让时钟自己把闹钟推后并重新排期
+                    Logs.fire("时钟通道", "已稍后提醒（无界面通道）");
                     return;
                 }
+                dbg("provider snooze unavailable, fallback to dismiss");
             }
         }
 
@@ -313,27 +328,35 @@ final class ClockChannel {
         }
     }
 
-    /** 用时钟自己的建闹钟流程，排一个 5 分钟后的闹钟。 */
-    private static boolean scheduleIn5Minutes(Context c) {
+    /**
+     * 无界面稍后提醒：走时钟自己的 AlarmProvider#call("snoozeAlarmAlert")。
+     *
+     * 这是时钟给语音助手（XiaoAi）用的入口，内部会：
+     *   AlarmService.getCurrentAlarm() → 发 action.alarm_snooze 广播
+     * 完全不拉起任何 Activity（之前的 HandleSetAlarmActivity 会跳转时钟界面）。
+     */
+    /**
+     * 无界面稍后提醒：完全复刻时钟 AlarmProvider 对 XiaoAi 的处理，
+     * 但直接在时钟进程内做（不经过 ContentProvider 的权限门）：
+     *
+     *   currentAlarm() → Intent("action.alarm_snooze") + extra("intent.extra.alarm", alarm)
+     *   → sendBroadcast（setPackage 自己）
+     */
+    private static boolean snoozeViaBroadcast(Context c) {
         try {
-            long at = System.currentTimeMillis() + 5 * 60 * 1000L;
-            java.util.Calendar cal = java.util.Calendar.getInstance();
-            cal.setTimeInMillis(at);
-            int hour = cal.get(java.util.Calendar.HOUR_OF_DAY);
-            int minute = cal.get(java.util.Calendar.MINUTE);
-
-            Intent i = new Intent("android.intent.action.SET_ALARM");
-            i.setComponent(new android.content.ComponentName("com.android.deskclock",
-                    "com.android.deskclock.HandleSetAlarmActivity"));
-            i.putExtra("android.intent.extra.alarm.HOUR", hour);
-            i.putExtra("android.intent.extra.alarm.MINUTES", minute);
-            i.putExtra("android.intent.extra.alarm.SKIP_UI", true);
-            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            c.startActivity(i);
-            dbg("scheduled +5min alarm at " + hour + ":" + minute);
+            Object alarm = sAlarm != null ? sAlarm : currentAlarm();
+            if (alarm == null) {
+                dbg("snooze: no current alarm");
+                return false;
+            }
+            Intent i = new Intent("action.alarm_snooze");
+            i.setPackage(c.getPackageName());
+            i.putExtra("intent.extra.alarm", (android.os.Parcelable) alarm);
+            c.sendBroadcast(i);
+            dbg("sent action.alarm_snooze with alarm");
             return true;
         } catch (Throwable t) {
-            dbg("schedule +5min failed: " + t);
+            dbg("snooze broadcast failed: " + t);
             return false;
         }
     }
@@ -371,6 +394,11 @@ final class ClockChannel {
         } catch (Throwable t) {
             dbg("dismissOnly error: " + t);
         }
+    }
+
+    private static String sAlarmHash() {
+        Object a = sAlarm;
+        return a == null ? "null" : Integer.toHexString(System.identityHashCode(a));
     }
 
     /** AlarmService.getCurrentAlarm() —— 当前正在响铃的 Alarm。 */

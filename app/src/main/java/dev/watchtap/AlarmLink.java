@@ -318,23 +318,27 @@ final class AlarmLink {
     /** 手表点「关闭」：取消代理闹钟，并提示用户在手机上关掉。 */
     static void onWatchDismiss() {
         dbg("watch action: DISMISS");
-        Logs.fire("闹钟联动", "手表已关闭闹钟 → 直接关闭系统闹钟");
+        Logs.fire("闹钟联动", "手表已关闭闹钟 → 关闭系统闹钟");
         cancelProxy();
         boolean viaClock = requestClock(ClockChannel.OP_DISMISS);
-        boolean viaMi = requestMiFitness(MiFitnessAlarm.OP_DISMISS);
-        boolean dismissed = viaClock || viaMi || dismissSystemAlarm();
+        boolean dismissed = viaClock || dismissSystemAlarm();
+        if (!viaClock) dbg("clock dismiss unavailable, fallback used=" + dismissed);
         notify("手表已关闭闹钟", dismissed ? "已关闭手机闹钟" : "关闭失败，请手动关闭手机闹钟");
     }
 
-    /** 手表点「稍后提醒」：固定 5 分钟后再次下发。 */
+    /**
+     * 手表点「稍后提醒」。
+     *
+     * 不在健康侧自己排代理闹钟 —— 手机闹钟由系统时钟推后 5 分钟，
+     * 推后动作会触发 ACTION_NEXT_ALARM_CLOCK_CHANGED，
+     * 我们据此把代理闹钟对齐到同一个时刻（避免两条时间线打架）。
+     */
     static void onWatchSnooze() {
-        long when = System.currentTimeMillis() + 5 * 60 * 1000L;
-        dbg("watch action: SNOOZE -> " + fmt(when));
-        Logs.fire("闹钟联动", "手表已稍后提醒，5 分钟后再次提醒");
-        scheduleProxyAt(when);
+        long expect = System.currentTimeMillis() + 5 * 60 * 1000L;
+        dbg("watch action: SNOOZE (clock will postpone to ~" + fmt(expect) + ")");
+        Logs.fire("闹钟联动", "手表已稍后提醒：手机闹钟推后 5 分钟");
         requestClock(ClockChannel.OP_SNOOZE);
-        requestMiFitness(MiFitnessAlarm.OP_SNOOZE);
-        notify("已稍后提醒", "5 分钟后（" + fmt(when) + "）再次提醒手表");
+        notify("已稍后提醒", "手机闹钟将在约 " + fmt(expect) + " 再次响铃");
     }
 
     /** 请求系统时钟进程（模块注入在时钟里，走它自己的关闭逻辑）。 */
