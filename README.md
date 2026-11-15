@@ -611,6 +611,17 @@ adb shell su -c 'cat /sdcard/Android/data/com.heytap.health/files/alarmlink.log'
 
 开关：`Prefs.K_ALARM_LINK`（`alarmLink`，默认开启）。
 
+### 稍后提醒（v2.20.5）
+
+手表点「稍后提醒」时，手机闹钟会**真正推后 5 分钟**：
+
+1. 若响铃界面存在 → 直接调它的 `onSnooze()`（与用户手点一致）
+2. 界面不存在（解锁状态只出通知）→ 用时钟自己的 `HandleSetAlarmActivity` + `SKIP_UI`
+   排一个 5 分钟后的闹钟，然后关掉当前响铃
+
+实测：08:10 响铃 → 手表稍后 → `scheduled +5min alarm at 8:15` → `stopAlarmKlaxon ok`
+→ AlarmManager 出现 `triggerTime=...08:15:00`，到点确实再次响铃。
+
 ### 已知限制
 
 - 关闭/稍后由**系统时钟进程**内完成（模块注入 `com.android.deskclock`）：

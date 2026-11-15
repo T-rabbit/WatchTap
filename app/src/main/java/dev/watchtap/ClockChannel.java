@@ -41,6 +41,8 @@ final class ClockChannel {
     /** 最近一次闹钟广播里携带的 Alarm（Parcelable），响铃/关闭都用它 */
     private static volatile Object sAlarm;
     private static volatile ClassLoader sCl;
+    /** 响铃界面实例（稍后提醒需要走它自己的 onSnooze） */
+    private static volatile Object sActivity;
 
     /** 诊断日志：写系统时钟自己的外部目录。 */
     private static void dbg(String msg) {
@@ -149,6 +151,26 @@ final class ClockChannel {
                 Logs.w("时钟通道：hook AlarmService 失败", t);
             }
             }
+            // 捕获响铃界面实例：稍后提醒要调用它的 onSnooze()
+            try {
+                Class<?> act = Class.forName(
+                        "com.android.deskclock.alarm.alert.AlarmAlertFullScreenActivity", false, cl);
+                for (Method am : act.getDeclaredMethods()) {
+                    if (!"onCreate".equals(am.getName()) && !"onResume".equals(am.getName())) continue;
+                    api.hook(am).intercept(chain -> {
+                        Object self = chain.getThisObject();
+                        if (self != null) {
+                            sActivity = self;
+                            dbg("alarm activity captured via " + chain.getExecutable().getName());
+                        }
+                        return chain.proceed();
+                    });
+                }
+                Logs.i("时钟通道：hook 响铃界面");
+            } catch (Throwable t) {
+                Logs.w("时钟通道：hook 响铃界面失败", t);
+            }
+
             Logs.i("时钟通道：已注入系统时钟进程");
             startWarmup();
         } catch (Throwable t) {
@@ -203,6 +225,31 @@ final class ClockChannel {
     private static void doDismiss(boolean snooze) {
         Context c = sCtx;
         if (c == null) { dbg("no ctx"); return; }
+
+        // 稍后提醒：优先走响铃界面自己的 onSnooze()（会把闹钟推后并重新排期）
+        if (snooze) {
+            Object act = sActivity;
+            if (act != null) {
+                try {
+                    Method m = act.getClass().getMethod("onSnooze");
+                    m.setAccessible(true);
+                    m.invoke(act);
+                    dbg("onSnooze invoked -> alarm postponed");
+                    Logs.fire("时钟通道", "已稍后提醒（手机闹钟推后）");
+                    return;
+                } catch (Throwable t) {
+                    dbg("onSnooze failed: " + t);
+                }
+            } else {
+                dbg("no alarm activity, scheduling +5min instead");
+                if (scheduleIn5Minutes(c)) {
+                    dismissOnly(c);
+                    Logs.fire("时钟通道", "已稍后提醒：手机闹钟已在 5 分钟后重排");
+                    return;
+                }
+            }
+        }
+
         try {
             Object alarm = sAlarm != null ? sAlarm : currentAlarm();
             dbg("dismiss requested, alarm=" + (alarm == null ? "null" : alarm.getClass().getName()));
@@ -263,6 +310,66 @@ final class ClockChannel {
         } catch (Throwable t) {
             Logs.e("时钟通道：关闭失败", t);
             dbg("dismiss error: " + t);
+        }
+    }
+
+    /** 用时钟自己的建闹钟流程，排一个 5 分钟后的闹钟。 */
+    private static boolean scheduleIn5Minutes(Context c) {
+        try {
+            long at = System.currentTimeMillis() + 5 * 60 * 1000L;
+            java.util.Calendar cal = java.util.Calendar.getInstance();
+            cal.setTimeInMillis(at);
+            int hour = cal.get(java.util.Calendar.HOUR_OF_DAY);
+            int minute = cal.get(java.util.Calendar.MINUTE);
+
+            Intent i = new Intent("android.intent.action.SET_ALARM");
+            i.setComponent(new android.content.ComponentName("com.android.deskclock",
+                    "com.android.deskclock.HandleSetAlarmActivity"));
+            i.putExtra("android.intent.extra.alarm.HOUR", hour);
+            i.putExtra("android.intent.extra.alarm.MINUTES", minute);
+            i.putExtra("android.intent.extra.alarm.SKIP_UI", true);
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            c.startActivity(i);
+            dbg("scheduled +5min alarm at " + hour + ":" + minute);
+            return true;
+        } catch (Throwable t) {
+            dbg("schedule +5min failed: " + t);
+            return false;
+        }
+    }
+
+    /** 只做关闭动作（停铃声/停服务/删一次性闹钟）。 */
+    private static void dismissOnly(Context c) {
+        Object alarm = sAlarm != null ? sAlarm : currentAlarm();
+        try {
+            Class<?> helper = Class.forName("com.android.deskclock.util.AlarmHelper", false, sCl);
+            Class<?> notif = Class.forName("com.android.deskclock.util.NotificationUtil", false, sCl);
+            try {
+                Method clear = notif.getDeclaredMethod("clearAlarmAlertNotification", Context.class, int.class);
+                clear.setAccessible(true);
+                clear.invoke(null, c, 0);
+            } catch (Throwable ignored) {
+            }
+            try {
+                Method stop = helper.getDeclaredMethod("stopAlarmKlaxon", Context.class);
+                stop.setAccessible(true);
+                stop.invoke(null, c);
+                dbg("stopAlarmKlaxon ok (snooze)");
+            } catch (Throwable ignored) {
+            }
+            if (alarm != null) {
+                try {
+                    Method del = helper.getDeclaredMethod("tryDeleteOneshotAlarm",
+                            Context.class, Class.forName("com.android.deskclock.Alarm", false, sCl));
+                    del.setAccessible(true);
+                    del.invoke(null, c, alarm);
+                } catch (Throwable ignored) {
+                }
+            }
+            Class<?> svc = Class.forName("com.android.deskclock.alarm.alert.AlarmService", false, sCl);
+            c.stopService(new Intent(c, svc));
+        } catch (Throwable t) {
+            dbg("dismissOnly error: " + t);
         }
     }
 
