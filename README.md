@@ -12,8 +12,51 @@
 |---|---|
 | **实时监控** | 手表睡眠模式 / 勿扰状态 / 生理睡眠，每秒刷新 |
 | **自动联动** | 手表进入睡眠模式 → 手机自动开启勿扰（仅放行闹钟） |
+| **手机闹钟联动** | 手机闹钟响 → 手表提醒；手表关闭/推迟 → 同步操作手机闹钟 |
+| **通知其他应用** | 睡眠模式切换时发一条安静通知，供 Tasker / MacroDroid 捕获 |
 | **手动控制** | UI 一键切换勿扰 + 写路径诊断 |
 | **全链路日志** | logcat + 文件 + UI 三通道，功能触发均有记录 |
+
+### 手机闹钟联动（v2.21.0）
+
+```
+手机闹钟响
+  系统时钟进程 AlarmService.onStartCommand 收到 ALARM_ALERT
+    ↓ sendBroadcast(dev.watchtap.ALARM_FIRED)      ← 约 7ms
+  OPPO 健康进程 → 推送到手表（带「关闭」「推迟」按钮）
+
+手表点「关闭」
+  → 时钟原生关闭：stopAlarmKlaxon + clearAlarmAlertNotification + stopService
+  → 闹钟从列表移除（一次性闹钟正常结束）
+
+手表点「推迟」
+  → 时钟原生 snooze：AlarmHelper.snoozeAlarm(ctx, alarm, 5)
+  → 手机闹钟推后 5 分钟，时钟 App 内显示「已推迟」，原闹钟保留
+```
+
+关键设计：
+
+- **不使用代理闹钟** —— 模块注入在系统时钟进程内，直接捕获真实响铃事件，
+  系统里始终只有时钟自己的那一个闹钟
+- **推迟走原生机制** —— 不用自建 `AlarmManager` 闹钟，因此时钟 App 里能看到
+  这条闹钟处于「已推迟」状态（依赖 `saveSnoozeAlert` 写入的 snooze 记录）
+- **推迟固定 5 分钟** —— `snoozeAlarm` 第三个参数单位是**分钟**（内部 ×1000 再 ×60），
+  与手表端显示一致
+- **按响铃周期去重** —— 每次 `ALARM_ALERT` 开一个新周期，同周期只接受一次动作，
+  避免手表重发或多进程重复导致闹钟被连续推后
+
+作用域：`com.heytap.health` + `com.android.deskclock`
+
+### ⚠️ 为什么不能借用小米运动健康的通道
+
+它的 console 通道确实能关闹钟（`IAlarmConsoleV1Callback.dismiss(int)`），但：
+
+1. 装上并绑定后，时钟会把响铃交给 wearable 侧，**手机不再本机响铃**
+2. 时钟里 `AdditionUtil.HEALTH_PKG_NAME` 编译期写死 `"com.mi.health"`，
+   OPPO 健康无法顶替
+3. 目标服务受 `com.mi.fitness.permission.CONSOLE_ALARM_RECEIVE` 签名权限保护
+
+因此最终采用「注入系统时钟」方案，不依赖任何第三方 App。
 
 ### 界面
 
