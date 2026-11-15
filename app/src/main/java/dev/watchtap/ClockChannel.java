@@ -49,6 +49,14 @@ final class ClockChannel {
     /** 去重：同一动作 3 秒内只处理一次（多个进程/多次广播会重复进来） */
     private static volatile long sLastActionAt;
     private static volatile String sLastActionKey = "";
+    /**
+     * 已处理过 snooze/dismiss 的「那一次响铃」。
+     *
+     * 用 ALARM_ALERT 到达时刻标记一次响铃周期：同一个周期内只处理一次动作。
+     * 之前的 8 秒时间窗不够 —— 手表重发/多进程重复会隔几十秒再来一次，
+     * 结果是排出两个不同的推迟时间。
+     */
+    private static volatile long sAlertCycle;
 
     /** 诊断日志：写系统时钟自己的外部目录。 */
     private static void dbg(String msg) {
@@ -126,6 +134,11 @@ final class ClockChannel {
                                 dbg("AlarmService.onStartCommand action=" + it.getAction()
                                         + " alarm=" + (a == null ? "null" : a.getClass().getSimpleName())
                                         + " extras=[" + keys + "]");
+                                // 新的响铃周期开始，允许接受一次新动作
+                                sAlertCycle = System.currentTimeMillis();
+                                sLastActionKey = "";
+                                dbg("new alert cycle=" + sAlertCycle);
+
                                 if (a == null) {
                                     // 新版只带 intent.extra.alarm_raw（Parcel 字节），
                                     // 用时钟自己的解析器还原 Alarm
@@ -232,12 +245,18 @@ final class ClockChannel {
         Context c = sCtx;
         if (c == null) { dbg("no ctx"); return; }
 
-        // 去重只看「动作 + 时间窗」，不看 Alarm 对象身份
-        // （同一个闹钟可能被解析成不同实例，或被多次广播）
-        String key = snooze ? "snooze" : "dismiss";
+        // 去重按「响铃周期」：同一次响铃只接受一个动作
+        long cycle = sAlertCycle;
+        String key = (snooze ? "snooze:" : "dismiss:") + cycle;
         long now = System.currentTimeMillis();
-        if (key.equals(sLastActionKey) && now - sLastActionAt < 8000L) {
-            dbg("skip duplicate action=" + key + " (" + (now - sLastActionAt) + "ms)");
+        if (cycle != 0 && key.equals(sLastActionKey)) {
+            dbg("skip duplicate " + (snooze ? "snooze" : "dismiss")
+                    + " for alert cycle " + cycle);
+            return;
+        }
+        // 兜底：同一动作 3 秒内重复也拦掉（cycle 为 0 时生效）
+        if (key.equals(sLastActionKey) && now - sLastActionAt < 3000L) {
+            dbg("skip duplicate (fast) " + key);
             return;
         }
         sLastActionKey = key;
@@ -248,7 +267,7 @@ final class ClockChannel {
         // 而是自己排一个精确的 5 分钟闹钟，然后关掉当前响铃。
         if (snooze) {
             if (scheduleExact(c, SNOOZE_MINUTES)) {
-                dismissOnly(c);
+                silenceOnly(c);
                 dbg("snooze: alarm re-armed at +" + SNOOZE_MINUTES + "min");
                 Logs.fire("时钟通道", "已稍后提醒：" + SNOOZE_MINUTES + " 分钟后再次响铃");
                 return;
@@ -348,14 +367,25 @@ final class ClockChannel {
             }
             long when = System.currentTimeMillis() + minutes * 60_000L;
 
-            // 给 Alarm 设置新的时间，并序列化成 alarm_raw
+            // 先深拷贝再改时间 —— 直接改 sAlarm 会污染时钟内部的同一个对象，
+            // 让原闹钟在界面上变成「已改到 5 分钟后」，看起来也像被关掉。
             Class<?> alarmCls = Class.forName("com.android.deskclock.Alarm", false, sCl);
+            Object copy = cloneAlarm(alarm, alarmCls);
+            if (copy == null) {
+                dbg("scheduleExact: clone failed, abort");
+                return false;
+            }
+            alarm = copy;
+
             java.util.Calendar cal = java.util.Calendar.getInstance();
             cal.setTimeInMillis(when);
             setInt(alarm, "hour", cal.get(java.util.Calendar.HOUR_OF_DAY));
             setInt(alarm, "minutes", cal.get(java.util.Calendar.MINUTE));
+            setInt(alarm, "seconds", 0);
             setLong(alarm, "time", when);
             setBool(alarm, "enabled", true);
+            // 推迟出来的这一次必须是「一次性、响完即弃」，不能写回用户的原闹钟
+            setBool(alarm, "deleteAfterUse", true);
 
             android.os.Parcel parcel = android.os.Parcel.obtain();
             java.lang.reflect.Method writeToParcel = alarmCls.getMethod(
@@ -392,6 +422,34 @@ final class ClockChannel {
         return false;
     }
 
+    /** 通过 Parcel 往返做深拷贝，避免字段遗漏。 */
+    private static Object cloneAlarm(Object alarm, Class<?> alarmCls) {
+        android.os.Parcel p = android.os.Parcel.obtain();
+        android.os.Parcel p2 = android.os.Parcel.obtain();
+        try {
+            java.lang.reflect.Method w = alarmCls.getMethod(
+                    "writeToParcel", android.os.Parcel.class, int.class);
+            w.setAccessible(true);
+            w.invoke(alarm, p, 0);
+            p.setDataPosition(0);
+
+            byte[] bytes = p.marshall();
+
+            java.lang.reflect.Constructor<?> ctor = alarmCls.getDeclaredConstructor(
+                    android.os.Parcel.class);
+            ctor.setAccessible(true);
+            p2.unmarshall(bytes, 0, bytes.length);
+            p2.setDataPosition(0);
+            return ctor.newInstance(p2);
+        } catch (Throwable t) {
+            dbg("cloneAlarm failed: " + t);
+            return null;
+        } finally {
+            p.recycle();
+            p2.recycle();
+        }
+    }
+
     private static void setLong(Object o, String field, long v) {
         try {
             java.lang.reflect.Field f = o.getClass().getDeclaredField(field);
@@ -425,44 +483,42 @@ final class ClockChannel {
                 .format(new java.util.Date(ms));
     }
 
-    /** 只做关闭动作（停铃声/停服务/删一次性闹钟）。 */
-    private static void dismissOnly(Context c) {
-        Object alarm = sAlarm != null ? sAlarm : currentAlarm();
+    /**
+     * 稍后提醒用：只停掉当前响铃，**不删除闹钟**。
+     *
+     * 之前的实现复用了 dismissOnly()，里面会调 tryDeleteOneshotAlarm()，
+     * 而通过 SET_ALARM 建的一次性闹钟 deleteAfterUse=true —— 会被直接从
+     * 时钟列表里删掉，用户看到的就是「点了推迟，闹钟却没了」。
+     * 推迟只是把时间往后挪，闹钟必须留着。
+     */
+    private static void silenceOnly(Context c) {
         try {
             Class<?> helper = Class.forName("com.android.deskclock.util.AlarmHelper", false, sCl);
             Class<?> notif = Class.forName("com.android.deskclock.util.NotificationUtil", false, sCl);
+
             try {
-                Method clear = notif.getDeclaredMethod("clearAlarmAlertNotification", Context.class, int.class);
+                Method clear = notif.getDeclaredMethod(
+                        "clearAlarmAlertNotification", Context.class, int.class);
                 clear.setAccessible(true);
                 clear.invoke(null, c, 0);
+                dbg("snooze: cleared alert notification");
             } catch (Throwable ignored) {
             }
+
             try {
                 Method stop = helper.getDeclaredMethod("stopAlarmKlaxon", Context.class);
                 stop.setAccessible(true);
                 stop.invoke(null, c);
-                dbg("stopAlarmKlaxon ok (snooze)");
+                dbg("snooze: klaxon stopped (alarm kept)");
             } catch (Throwable ignored) {
             }
-            if (alarm != null) {
-                try {
-                    Method del = helper.getDeclaredMethod("tryDeleteOneshotAlarm",
-                            Context.class, Class.forName("com.android.deskclock.Alarm", false, sCl));
-                    del.setAccessible(true);
-                    del.invoke(null, c, alarm);
-                } catch (Throwable ignored) {
-                }
-            }
-            Class<?> svc = Class.forName("com.android.deskclock.alarm.alert.AlarmService", false, sCl);
+
+            Class<?> svc = Class.forName(
+                    "com.android.deskclock.alarm.alert.AlarmService", false, sCl);
             c.stopService(new Intent(c, svc));
         } catch (Throwable t) {
-            dbg("dismissOnly error: " + t);
+            dbg("silenceOnly error: " + t);
         }
-    }
-
-    private static String sAlarmHash() {
-        Object a = sAlarm;
-        return a == null ? "null" : Integer.toHexString(System.identityHashCode(a));
     }
 
     /** AlarmService.getCurrentAlarm() —— 当前正在响铃的 Alarm。 */
