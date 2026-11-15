@@ -37,6 +37,10 @@ final class ClockChannel {
     static final String OP_SNOOZE = "snooze";
     static final String OP_CANCEL = "cancel";
 
+    /** 时钟进程 → OPPO 健康进程：闹钟开始响铃 */
+    static final String ACTION_ALARM_FIRED = "dev.watchtap.ALARM_FIRED";
+    static final String EXTRA_FIRED_AT = "firedAt";
+
     /** 稍后提醒固定分钟数（与手表端显示保持一致） */
     static final int SNOOZE_MINUTES = 5;
 
@@ -139,6 +143,10 @@ final class ClockChannel {
                                 sAlertCycle = System.currentTimeMillis();
                                 sLastActionKey = "";
                                 dbg("new alert cycle=" + sAlertCycle);
+
+                                // 把「响铃了」直接告诉 OPPO 健康进程去推手表，
+                                // 不再需要模块自己排一个同刻的代理闹钟。
+                                notifyAlarmFired(sAlertCycle, it.getAction());
 
                                 if (a == null) {
                                     // 新版只带 intent.extra.alarm_raw（Parcel 字节），
@@ -458,6 +466,33 @@ final class ClockChannel {
         } finally {
             p.recycle();
             p2.recycle();
+        }
+    }
+
+    /**
+     * 把「闹钟开始响铃」事件发给 OPPO 健康进程。
+     *
+     * 为什么用显式广播：
+     *   时钟进程里拿不到 OPPO 健康的 controller（那是宿主内部对象），
+     *   只能把事件交回 health 进程，由它调 AlarmLink.inject()。
+     *
+     * setPackage 限定只投给 com.heytap.health，避免被别的应用收到。
+     */
+    private static void notifyAlarmFired(long firedAt, String action) {
+        Context c = sCtx;
+        if (c == null) {
+            dbg("notifyAlarmFired: no ctx");
+            return;
+        }
+        try {
+            Intent i = new Intent(ACTION_ALARM_FIRED);
+            i.setPackage("com.heytap.health");
+            i.putExtra(EXTRA_FIRED_AT, firedAt);
+            i.putExtra("action", action);
+            c.sendBroadcast(i);
+            dbg("notifyAlarmFired -> health, t=" + firedAt);
+        } catch (Throwable t) {
+            dbg("notifyAlarmFired failed: " + t);
         }
     }
 

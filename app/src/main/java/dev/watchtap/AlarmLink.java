@@ -52,6 +52,16 @@ final class AlarmLink {
     /** 调试用：adb shell am broadcast -a dev.watchtap.DEBUG_ALARM --el t <毫秒时间戳> */
     static final String ACTION_DEBUG = "dev.watchtap.DEBUG_ALARM";
 
+    /**
+     * 响铃事件来源开关。
+     *
+     * true  : 由时钟进程在 ALARM_ALERT 时直接上报（不再需要代理闹钟）
+     * false : 退回旧的代理闹钟方案
+     *
+     * 保留开关是为了新方案万一在某个 ROM 上拿不到事件时能快速回退。
+     */
+    static final boolean USE_CLOCK_REPORT = true;
+
     /** 调试用（只测通知，绝不触发任何闹钟推送） */
     static final String ACTION_NOTIFY_TEST = "dev.watchtap.DEBUG_NOTIFY";
 
@@ -289,6 +299,14 @@ final class AlarmLink {
                         scheduleProxy(app);
                         return;
                     }
+                    if (ClockChannel.ACTION_ALARM_FIRED.equals(a)) {
+                        long t = i.getLongExtra(ClockChannel.EXTRA_FIRED_AT, 0L);
+                        if (t <= 0) t = System.currentTimeMillis();
+                        dbg("clock reported alarm fired t=" + fmt(t));
+                        Logs.fire("闹钟联动", "系统时钟响铃，推送给手表 t=" + fmt(t));
+                        inject(t, "手机闹钟");
+                        return;
+                    }
                     if (ProxyReceiver.ACTION_PROXY.equals(a)) {
                         sProxyAt = 0L;
                         long t = i.getLongExtra("t", 0L);
@@ -304,10 +322,21 @@ final class AlarmLink {
             f.addAction(ACTION_NOTIFY_TEST);
             f.addAction(AlarmManager.ACTION_NEXT_ALARM_CLOCK_CHANGED);
             f.addAction(ProxyReceiver.ACTION_PROXY);
+            f.addAction(ClockChannel.ACTION_ALARM_FIRED);
             if (Build.VERSION.SDK_INT >= 33) {
                 app.registerReceiver(r, f, Context.RECEIVER_EXPORTED);
             } else {
                 app.registerReceiver(r, f);
+            }
+
+            if (USE_CLOCK_REPORT) {
+                // 新方案不再需要代理闹钟，清掉升级前遗留的那条
+                try {
+                    cancelProxy();
+                    dbg("legacy proxy alarm cleared on attach");
+                } catch (Throwable t) {
+                    dbg("clear legacy proxy failed: " + t);
+                }
             }
 
             boolean enabled = syncEnabled();
@@ -433,8 +462,12 @@ final class AlarmLink {
         }
     }
 
-    /** 在指定时刻排代理闹钟。 */
+    /** 在指定时刻排代理闹钟（新方案下不再使用）。 */
     static void scheduleProxyAt(long when) {
+        if (USE_CLOCK_REPORT) {
+            dbg("proxy skipped (clock reports directly), would be " + fmt(when));
+            return;
+        }
         try {
             Context c = sCtx;
             if (c == null) return;
@@ -637,6 +670,10 @@ final class AlarmLink {
 
     /** 读系统下一个闹钟，用 setAlarmClock 在同一时刻排一个代理闹钟。 */
     static void scheduleProxy(Context ctx) {
+        if (USE_CLOCK_REPORT) {
+            dbg("scheduleProxy skipped: clock reports ALARM_ALERT directly");
+            return;
+        }
         try {
             AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
             if (am == null) return;
