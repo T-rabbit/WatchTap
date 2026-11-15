@@ -35,6 +35,7 @@ final class ClockChannel {
     static final String EXTRA_OP = "op";
     static final String OP_DISMISS = "dismiss";
     static final String OP_SNOOZE = "snooze";
+    static final String OP_CANCEL = "cancel";
 
     /** 稍后提醒固定分钟数（与手表端显示保持一致） */
     static final int SNOOZE_MINUTES = 5;
@@ -219,6 +220,7 @@ final class ClockChannel {
                             Logs.fire("时钟通道", "收到请求 op=" + op);
                             if (OP_DISMISS.equals(op)) doDismiss(false);
                             else if (OP_SNOOZE.equals(op)) doDismiss(true);
+                            else if (OP_CANCEL.equals(op)) cancelScheduled(ctx);
                         }
                     };
                     IntentFilter f = new IntentFilter(ACTION_REQUEST);
@@ -266,13 +268,22 @@ final class ClockChannel {
         // 不用时钟自带的 snooze（时长取系统设置，实测 10 分钟），
         // 而是自己排一个精确的 5 分钟闹钟，然后关掉当前响铃。
         if (snooze) {
+            // 走时钟自己的 snoozeAlarm(ctx, alarm, seconds)：
+            //   - 在 App 里能看到这个闹钟处于「已推迟」状态
+            //   - 由时钟负责重新排期，不污染原闹钟
+            //   - 秒数由我们指定，因此固定 5 分钟，与手表一致
+            if (nativeSnooze(c, SNOOZE_MINUTES)) {
+                Logs.fire("时钟通道", "已稍后提醒：" + SNOOZE_MINUTES + " 分钟后再次响铃");
+                return;
+            }
+            dbg("snooze: native snooze failed, fallback to AlarmManager");
             if (scheduleExact(c, SNOOZE_MINUTES)) {
                 silenceOnly(c);
                 dbg("snooze: alarm re-armed at +" + SNOOZE_MINUTES + "min");
                 Logs.fire("时钟通道", "已稍后提醒：" + SNOOZE_MINUTES + " 分钟后再次响铃");
                 return;
             }
-            dbg("snooze: schedule failed, fallback to dismiss");
+            dbg("snooze: all paths failed, fallback to dismiss");
         }
 
         try {
@@ -450,6 +461,34 @@ final class ClockChannel {
         }
     }
 
+    /** 取消我们通过 AlarmManager 排下的闹钟（清理用）。 */
+    static void cancelScheduled(Context c) {
+        try {
+            Intent i = new Intent("com.android.deskclock.ALARM_ALERT");
+            i.setComponent(new android.content.ComponentName("com.android.deskclock",
+                    "com.android.deskclock.alarm.alert.AlarmService"));
+            // 注意：不能只用 FLAG_NO_CREATE —— 重启后 intent 里没有 extras，
+            // 与原 PendingIntent 的 filterEquals 虽然成立，但部分 ROM 仍取不到。
+            // 这里带 CREATE 拿一个同 filter 的引用再 cancel。
+            int flags = android.app.PendingIntent.FLAG_UPDATE_CURRENT
+                    | (android.os.Build.VERSION.SDK_INT >= 23
+                        ? android.app.PendingIntent.FLAG_IMMUTABLE : 0);
+            android.app.PendingIntent pi = android.app.PendingIntent.getForegroundService(
+                    c, 0x5742, i, flags);
+            if (pi == null) {
+                dbg("cancelScheduled: no pending intent");
+                return;
+            }
+            android.app.AlarmManager am =
+                    (android.app.AlarmManager) c.getSystemService(Context.ALARM_SERVICE);
+            am.cancel(pi);
+            pi.cancel();
+            dbg("cancelScheduled: cancelled");
+        } catch (Throwable t) {
+            dbg("cancelScheduled failed: " + t);
+        }
+    }
+
     private static void setLong(Object o, String field, long v) {
         try {
             java.lang.reflect.Field f = o.getClass().getDeclaredField(field);
@@ -481,6 +520,47 @@ final class ClockChannel {
     private static String fmt(long ms) {
         return new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
                 .format(new java.util.Date(ms));
+    }
+
+    /**
+     * 调时钟自己的 snooze：AlarmHelper.snoozeAlarm(Context, Alarm, int seconds)。
+     *
+     * 它内部会：清告警通知 → 停铃声 → saveSnoozeAlert 写推迟记录 →
+     * 重新排期。因此闹钟在时钟 App 里会显示为「已推迟」，
+     * 而不是像我之前自建 AlarmManager 那样在列表里查无此物。
+     *
+     * @param minutes 推迟分钟数。
+     *                时钟内部算法：minutes × 1000（当秒算）再 × 60 —— 合计 ×60000 毫秒，
+     *                也就是这个参数单位就是「分钟」，传 5 才是 5 分钟。
+     */
+    private static boolean nativeSnooze(Context c, int minutes) {
+        Object alarm = sAlarm != null ? sAlarm : currentAlarm();
+        if (alarm == null) {
+            dbg("nativeSnooze: no alarm object");
+            return false;
+        }
+        try {
+            Class<?> helper = Class.forName(
+                    "com.android.deskclock.util.AlarmHelper", false, sCl);
+            Class<?> alarmCls = Class.forName("com.android.deskclock.Alarm", false, sCl);
+
+            java.lang.reflect.Method m = helper.getDeclaredMethod(
+                    "snoozeAlarm", Context.class, alarmCls, int.class);
+            m.setAccessible(true);
+            m.invoke(null, c, alarm, minutes);
+            dbg("nativeSnooze ok: +" + minutes + "min (alarm kept, visible in app)");
+            return true;
+        } catch (java.lang.reflect.InvocationTargetException ite) {
+            Throwable cause = ite.getCause() == null ? ite : ite.getCause();
+            dbg("nativeSnooze InvocationTarget: " + cause);
+            for (StackTraceElement e : java.util.Arrays.copyOf(
+                    cause.getStackTrace(), Math.min(3, cause.getStackTrace().length))) {
+                dbg("  at " + e);
+            }
+        } catch (Throwable t) {
+            dbg("nativeSnooze failed: " + t);
+        }
+        return false;
     }
 
     /**

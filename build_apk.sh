@@ -39,7 +39,7 @@ echo "==> 1/7 生成 R.java + 编译资源 (aapt2)"
   --java "$OUT/gen" \
   --min-sdk-version "$MIN_SDK" \
   --target-sdk-version "$TARGET_SDK" \
-  --version-code 32 --version-name "2.20.9" \
+  --version-code 33 --version-name "2.20.10" \
   "$OUT/res.zip"
 echo "    base.apk 已生成（含 resources.arsc）"
 
