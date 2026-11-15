@@ -291,14 +291,13 @@ final class AlarmLink {
                 app.registerReceiver(r, f);
             }
 
-            boolean enabled = Prefs.getBool(app, Prefs.K_ALARM_LINK, true);
+            boolean enabled = syncEnabled();
             if (!enabled) {
                 Logs.fire("闹钟联动", "已在设置里关闭，仅保留调试入口");
                 return;
             }
             Logs.fire("闹钟联动", "已监听系统闹钟变化 + 调试入口");
-            boolean on = Prefs.getBool(app, Prefs.K_ALARM_LINK, true);
-            dbg("attach ok, alarmLink=" + on);
+            dbg("attach ok, syncEnabled=" + syncEnabled());
             scheduleProxy(app);
         } catch (Throwable t) {
             Logs.e("闹钟联动：注册监听失败", t);
@@ -316,7 +315,43 @@ final class AlarmLink {
     // ------------------------------------------------------------ 手表回传动作
 
     /** 手表点「关闭」：取消代理闹钟，并提示用户在手机上关掉。 */
+    /**
+     * 同步功能总开关（运行中变化也能生效）。
+     *
+     * 直接读模块 App 的 prefs 文件（固定路径 + root），
+     * 不走 Prefs 的多路径猜测，避免跨 uid 读不到时静默回落到默认值。
+     */
+    static boolean syncEnabled() {
+        String v = readModulePref("alarmSync");
+        String l = readModulePref("alarmLink");
+        boolean sync = v == null || "true".equals(v);
+        boolean link = l == null || "true".equals(l);
+        return sync && link;
+    }
+
+    /**
+     * 读开关：走模块自己的 ContentProvider（它就跑在 OPPO 健康进程里），
+     * 不依赖 root，也不跨 uid 猜文件路径。
+     */
+    private static String readModulePref(String key) {
+        try {
+            Context c = sCtx;
+            if (c == null) return null;
+            android.os.Bundle b = c.getContentResolver().call(
+                    StateStore.URI, StateStore.METHOD_GET, null, null);
+            if (b == null) return null;
+            boolean v = b.getBoolean(key, true);
+            return v ? "true" : "false";
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     static void onWatchDismiss() {
+        if (!syncEnabled()) {
+            dbg("watch DISMISS ignored: alarm sync disabled");
+            return;
+        }
         dbg("watch action: DISMISS");
         Logs.fire("闹钟联动", "手表已关闭闹钟 → 关闭系统闹钟");
         cancelProxy();
@@ -334,6 +369,10 @@ final class AlarmLink {
      * 我们据此把代理闹钟对齐到同一个时刻（避免两条时间线打架）。
      */
     static void onWatchSnooze() {
+        if (!syncEnabled()) {
+            dbg("watch SNOOZE ignored: alarm sync disabled");
+            return;
+        }
         long expect = System.currentTimeMillis() + 5 * 60 * 1000L;
         dbg("watch action: SNOOZE (clock will postpone to ~" + fmt(expect) + ")");
         Logs.fire("闹钟联动", "手表已稍后提醒：手机闹钟推后 5 分钟");
@@ -618,6 +657,10 @@ final class AlarmLink {
 
     /** 构造 PlatformClockInfo 并调用 App 自己的 alarmClockRing()。 */
     static boolean inject(long triggerTime, String source) {
+        if (!syncEnabled()) {
+            dbg("inject skipped: alarm sync disabled");
+            return false;
+        }
         if (sCtrl == null) {
             // App 懒加载才有实例，这里自己造一个（无参构造只包一个 lambda，无外部依赖）
             try {

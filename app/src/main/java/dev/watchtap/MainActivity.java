@@ -39,6 +39,7 @@ public class MainActivity extends Activity {
     private Button mDndBtn;
     private android.widget.Switch mMuteSwitch;
     private android.widget.Switch mNotifySwitch;
+    private android.widget.Switch mAlarmSyncSwitch;
     private Button mFixBtn;
     private TextView mFixStatus;
 
@@ -113,6 +114,11 @@ public class MainActivity extends Activity {
         root.addView(switchRow("通知其他应用",
                 "手表进入/退出睡眠模式时发一条安静通知，供 Tasker 等自动化捕获",
                 mNotifySwitch));
+
+        mAlarmSyncSwitch = makeSwitch(false, this::saveAlarmSyncPref);
+        root.addView(switchRow("手机闹钟同步",
+                "手机闹钟响时推送到手表；手表点关闭/稍后提醒会同步操作手机闹钟（稍后固定 5 分钟）",
+                mAlarmSyncSwitch));
 
         // 修复联动开关（按钮式：点一下执行一次，不需要保持开启）
         mFixBtn = new Button(this);
@@ -521,6 +527,8 @@ public class MainActivity extends Activity {
 
         // ---- 通知开关 ----
         boolean notify = Prefs.getBool(this, Prefs.K_NOTIFY, false);
+        boolean alarmSync = Prefs.getBool(this, Prefs.K_ALARM_SYNC, true);
+        if (mAlarmSyncSwitch != null) mAlarmSyncSwitch.setChecked(alarmSync);
         if (mNotifySwitch.isChecked() != notify) {
             mNotifySwitch.setOnCheckedChangeListener(null);
             mNotifySwitch.setChecked(notify);
@@ -772,6 +780,29 @@ public class MainActivity extends Activity {
         StateStore.logLocal(this, "通知其他应用：" + (on ? "已开启" : "已关闭"));
         if (on) {
             toast("已开启，手表变化时会发通知");
+        }
+    }
+
+    /** 保存「手机闹钟同步」偏好。 */
+    private void saveAlarmSyncPref(boolean on) {
+        Prefs.setBool(this, Prefs.K_ALARM_SYNC, on);
+        HookPrefsChannel.push(Prefs.K_ALARM_SYNC, on);
+        pushAlarmSyncToProvider(on);
+        StateStore.logLocal(this, "手机闹钟同步：" + (on ? "已开启" : "已关闭"));
+        if (on) {
+            toast("已开启：手机闹钟会推送到手表");
+        } else {
+            toast("已关闭：不再同步手机闹钟");
+        }
+    }
+
+    /** 把开关值同步给 hook 进程用的 provider。 */
+    private void pushAlarmSyncToProvider(boolean on) {
+        try {
+            android.os.Bundle in = new android.os.Bundle();
+            in.putBoolean(StateStore.K_ALARM_SYNC, on);
+            getContentResolver().call(StateStore.URI, StateStore.METHOD_SYNC_PREFS, null, in);
+        } catch (Throwable ignored) {
         }
     }
 

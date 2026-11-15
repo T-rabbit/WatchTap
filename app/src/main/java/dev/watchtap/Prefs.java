@@ -50,6 +50,9 @@ final class Prefs {
     /** 手机闹钟 → 手表 联动（默认开） */
     static final String K_ALARM_LINK = "alarmLink";
 
+    /** 手机闹钟同步功能总开关（UI 控制，默认开） */
+    static final String K_ALARM_SYNC = "alarmSync";
+
     private Prefs() {}
 
     /** 本进程自己的偏好文件。 */

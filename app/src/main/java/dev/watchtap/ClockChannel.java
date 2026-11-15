@@ -36,6 +36,9 @@ final class ClockChannel {
     static final String OP_DISMISS = "dismiss";
     static final String OP_SNOOZE = "snooze";
 
+    /** 稍后提醒固定分钟数（与手表端显示保持一致） */
+    static final int SNOOZE_MINUTES = 5;
+
     private static volatile Context sCtx;
     private static volatile boolean sListening;
     /** 最近一次闹钟广播里携带的 Alarm（Parcelable），响铃/关闭都用它 */
@@ -233,36 +236,24 @@ final class ClockChannel {
         // （同一个闹钟可能被解析成不同实例，或被多次广播）
         String key = snooze ? "snooze" : "dismiss";
         long now = System.currentTimeMillis();
-        if (key.equals(sLastActionKey) && now - sLastActionAt < 5000L) {
+        if (key.equals(sLastActionKey) && now - sLastActionAt < 8000L) {
             dbg("skip duplicate action=" + key + " (" + (now - sLastActionAt) + "ms)");
             return;
         }
         sLastActionKey = key;
         sLastActionAt = now;
 
-        // 稍后提醒：优先走响铃界面自己的 onSnooze()（会把闹钟推后并重新排期）
+        // 稍后提醒：固定 5 分钟，与手表显示一致。
+        // 不用时钟自带的 snooze（时长取系统设置，实测 10 分钟），
+        // 而是自己排一个精确的 5 分钟闹钟，然后关掉当前响铃。
         if (snooze) {
-            Object act = sActivity;
-            if (act != null) {
-                try {
-                    Method m = act.getClass().getMethod("onSnooze");
-                    m.setAccessible(true);
-                    m.invoke(act);
-                    dbg("onSnooze invoked -> alarm postponed");
-                    Logs.fire("时钟通道", "已稍后提醒（手机闹钟推后）");
-                    return;
-                } catch (Throwable t) {
-                    dbg("onSnooze failed: " + t);
-                }
-            } else {
-                dbg("no alarm activity, sending alarm_snooze broadcast");
-                if (snoozeViaBroadcast(c)) {
-                    // provider 已经让时钟自己把闹钟推后并重新排期
-                    Logs.fire("时钟通道", "已稍后提醒（无界面通道）");
-                    return;
-                }
-                dbg("provider snooze unavailable, fallback to dismiss");
+            if (scheduleExact(c, SNOOZE_MINUTES)) {
+                dismissOnly(c);
+                dbg("snooze: alarm re-armed at +" + SNOOZE_MINUTES + "min");
+                Logs.fire("时钟通道", "已稍后提醒：" + SNOOZE_MINUTES + " 分钟后再次响铃");
+                return;
             }
+            dbg("snooze: schedule failed, fallback to dismiss");
         }
 
         try {
@@ -336,29 +327,102 @@ final class ClockChannel {
      * 完全不拉起任何 Activity（之前的 HandleSetAlarmActivity 会跳转时钟界面）。
      */
     /**
-     * 无界面稍后提醒：完全复刻时钟 AlarmProvider 对 XiaoAi 的处理，
-     * 但直接在时钟进程内做（不经过 ContentProvider 的权限门）：
+     * 精确排一个 N 分钟后的闹钟（不碰 UI）。
      *
-     *   currentAlarm() → Intent("action.alarm_snooze") + extra("intent.extra.alarm", alarm)
-     *   → sendBroadcast（setPackage 自己）
+     * 做法：复制当前响铃的 Alarm → 改时间 → 交给时钟自己的排期通道。
+     * 这里直接用 AlarmManager + 时钟的 AlarmReceiver，避免任何 Activity。
      */
-    private static boolean snoozeViaBroadcast(Context c) {
+    /**
+     * 精确排一个 N 分钟后的闹钟。
+     *
+     * 不依赖时钟数据库（addAlarm/setAlarm 在不同 ROM 上行为不一致），
+     * 直接用 AlarmManager 给时钟的 AlarmReceiver 排一个 ALARM_ALERT，
+     * 参数沿用当前闹钟的 alarm_raw 字节，行为与真实闹钟一致。
+     */
+    private static boolean scheduleExact(Context c, int minutes) {
         try {
             Object alarm = sAlarm != null ? sAlarm : currentAlarm();
             if (alarm == null) {
-                dbg("snooze: no current alarm");
+                dbg("scheduleExact: no alarm object");
                 return false;
             }
-            Intent i = new Intent("action.alarm_snooze");
-            i.setPackage(c.getPackageName());
+            long when = System.currentTimeMillis() + minutes * 60_000L;
+
+            // 给 Alarm 设置新的时间，并序列化成 alarm_raw
+            Class<?> alarmCls = Class.forName("com.android.deskclock.Alarm", false, sCl);
+            java.util.Calendar cal = java.util.Calendar.getInstance();
+            cal.setTimeInMillis(when);
+            setInt(alarm, "hour", cal.get(java.util.Calendar.HOUR_OF_DAY));
+            setInt(alarm, "minutes", cal.get(java.util.Calendar.MINUTE));
+            setLong(alarm, "time", when);
+            setBool(alarm, "enabled", true);
+
+            android.os.Parcel parcel = android.os.Parcel.obtain();
+            java.lang.reflect.Method writeToParcel = alarmCls.getMethod(
+                    "writeToParcel", android.os.Parcel.class, int.class);
+            writeToParcel.setAccessible(true);
+            writeToParcel.invoke(alarm, parcel, 0);
+            parcel.setDataPosition(0);
+            byte[] raw = parcel.marshall();
+            parcel.recycle();
+
+            Intent i = new Intent("com.android.deskclock.ALARM_ALERT");
+            i.setComponent(new android.content.ComponentName("com.android.deskclock",
+                    "com.android.deskclock.alarm.alert.AlarmService"));
+            i.putExtra("intent.extra.alarm_raw", raw);
             i.putExtra("intent.extra.alarm", (android.os.Parcelable) alarm);
-            c.sendBroadcast(i);
-            dbg("sent action.alarm_snooze with alarm");
+
+            int flags = android.app.PendingIntent.FLAG_UPDATE_CURRENT
+                    | (android.os.Build.VERSION.SDK_INT >= 23
+                        ? android.app.PendingIntent.FLAG_IMMUTABLE : 0);
+            android.app.PendingIntent pi = android.app.PendingIntent.getForegroundService(
+                    c, 0x5742, i, flags);
+
+            android.app.AlarmManager am =
+                    (android.app.AlarmManager) c.getSystemService(Context.ALARM_SERVICE);
+            am.setAlarmClock(new android.app.AlarmManager.AlarmClockInfo(when, null), pi);
+            dbg("scheduleExact: AlarmManager set at " + fmt(when));
             return true;
+        } catch (java.lang.reflect.InvocationTargetException ite) {
+            Throwable cause = ite.getCause() == null ? ite : ite.getCause();
+            dbg("scheduleExact InvocationTarget: " + cause);
         } catch (Throwable t) {
-            dbg("snooze broadcast failed: " + t);
-            return false;
+            dbg("scheduleExact failed: " + t);
         }
+        return false;
+    }
+
+    private static void setLong(Object o, String field, long v) {
+        try {
+            java.lang.reflect.Field f = o.getClass().getDeclaredField(field);
+            f.setAccessible(true);
+            if (f.getType() == long.class) f.setLong(o, v);
+            else if (f.getType() == int.class) f.setInt(o, (int) v);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void setInt(Object o, String field, int v) {
+        try {
+            java.lang.reflect.Field f = o.getClass().getDeclaredField(field);
+            f.setAccessible(true);
+            f.setInt(o, v);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void setBool(Object o, String field, boolean v) {
+        try {
+            java.lang.reflect.Field f = o.getClass().getDeclaredField(field);
+            f.setAccessible(true);
+            f.setBoolean(o, v);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static String fmt(long ms) {
+        return new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+                .format(new java.util.Date(ms));
     }
 
     /** 只做关闭动作（停铃声/停服务/删一次性闹钟）。 */
