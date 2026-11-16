@@ -30,6 +30,8 @@ public class MainActivity extends Activity {
     private TextView mSleepModeValue, mSleepModeSub;
     private TextView mDndValue, mDndSub;
     private TextView mSleepValue, mSleepSub;
+    private TextView mHrValue, mHrSub, mHrUpdated;
+    private Button mHrBtn;
     private TextView mPermBar;
     private TextView mDiag;
     private Button mUpdateBtn;
@@ -40,6 +42,7 @@ public class MainActivity extends Activity {
     private android.widget.Switch mMuteSwitch;
     private android.widget.Switch mNotifySwitch;
     private android.widget.Switch mAlarmSyncSwitch;
+    private android.widget.Switch mCaptureSwitch;
     private Button mFixBtn;
     private TextView mFixStatus;
 
@@ -104,6 +107,26 @@ public class MainActivity extends Activity {
         mSleepSub = new TextView(this);
         root.addView(card("生理睡眠检测", mSleepValue, mSleepSub));
 
+        // 心率：按需拉取
+        mHrValue = new TextView(this);
+        mHrSub = new TextView(this);
+        mHrUpdated = new TextView(this);
+        LinearLayout hrCard = card("手表心率", mHrValue, mHrSub);
+        hrCard.addView(mHrUpdated, lp(0, dp(2), 0, 0));
+
+        mHrBtn = new Button(this);
+        mHrBtn.setText("上报一次");
+        mHrBtn.setAllCaps(false);
+        mHrBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        mHrBtn.setTextColor(Color.WHITE);
+        mHrBtn.setBackgroundColor(0xFF2563EB);
+        mHrBtn.setMinHeight(0);
+        mHrBtn.setMinimumHeight(0);
+        mHrBtn.setPadding(dp(10), dp(6), dp(10), dp(6));
+        mHrBtn.setOnClickListener(v -> doFetchHeartRate());
+        hrCard.addView(mHrBtn, lp(0, dp(8), 0, 0));
+        root.addView(hrCard);
+
         // 开关区（统一构造）
         mMuteSwitch = makeSwitch(false, this::saveMutePref);
         root.addView(switchRow("同步静音",
@@ -114,6 +137,12 @@ public class MainActivity extends Activity {
         root.addView(switchRow("通知其他应用",
                 "手表进入/退出睡眠模式时发一条安静通知，供 Tasker 等自动化捕获",
                 mNotifySwitch));
+
+        mCaptureSwitch = makeSwitch(false, this::saveCapturePref);
+        root.addView(switchRow("报文采集（睡眠分析用）",
+                "把收到的每条报文完整写入 capture/<日期>/frame.log，供离线分析；"
+                        + "不影响功能，文件不会自动删除",
+                mCaptureSwitch));
 
         mAlarmSyncSwitch = makeSwitch(false, this::saveAlarmSyncPref);
         root.addView(switchRow("手机闹钟同步",
@@ -440,6 +469,7 @@ public class MainActivity extends Activity {
     private void tick() {
         if (!mRunning) return;
         refresh();
+        refreshHeartRate();
         mHandler.postDelayed(this::tick, 1000L);
     }
 
@@ -529,6 +559,9 @@ public class MainActivity extends Activity {
         boolean notify = Prefs.getBool(this, Prefs.K_NOTIFY, false);
         boolean alarmSync = Prefs.getBool(this, Prefs.K_ALARM_SYNC, true);
         if (mAlarmSyncSwitch != null) mAlarmSyncSwitch.setChecked(alarmSync);
+        boolean cap = Prefs.getBool(this, Prefs.K_CAPTURE, false);
+        if (mCaptureSwitch != null) mCaptureSwitch.setChecked(cap);
+        ProviderPrefs.setBoolean(this, Prefs.K_CAPTURE, cap);
 
         // 把开关值回填给 provider（hook 进程靠它读取，跨 uid 读文件不可靠）
         ProviderPrefs.setBoolean(this, Prefs.K_NOTIFY, notify);
@@ -787,6 +820,46 @@ public class MainActivity extends Activity {
         if (on) {
             toast("已开启，手表变化时会发通知");
         }
+    }
+
+    /** 手动触发一次心率上报。 */
+    private void doFetchHeartRate() {
+        if (!HealthTx.ready()) {
+            toast("通道还没就绪：请让 OPPO 健康先发一次数据（打开 App 或同步一次）");
+            return;
+        }
+        toast("已请求，等手表回传…");
+        new Thread(() -> {
+            boolean ok = HeartRate.fetch(0);
+            runOnUiThread(() -> {
+                refreshHeartRate();
+                if (!ok) toast("请求发送失败，看日志");
+            });
+        }).start();
+        mHrBtn.setEnabled(false);
+        mHrBtn.postDelayed(() -> mHrBtn.setEnabled(true), 5000);
+    }
+
+    /** 刷新心率卡片。 */
+    private void refreshHeartRate() {
+        if (mHrValue == null) return;
+        mHrValue.setText(HeartRate.statusLine());
+        mHrValue.setTextColor(HeartRate.fresh() ? 0xFF34D399 : 0xFFE5E7EB);
+        String detail = HeartRate.detailLine();
+        if (!HealthTx.ready()) detail = detail + "  ·  通道待就绪";
+        mHrSub.setText(detail);
+        mHrUpdated.setText(HeartRate.updatedLine());
+        mHrUpdated.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
+        mHrUpdated.setTextColor(0xFF6B7280);
+    }
+
+    /** 保存「报文采集」偏好。 */
+    private void saveCapturePref(boolean on) {
+        Prefs.setBool(this, Prefs.K_CAPTURE, on);
+        ProviderPrefs.setBoolean(this, Prefs.K_CAPTURE, on);
+        StateStore.logLocal(this, "报文采集：" + (on ? "已开启" : "已关闭"));
+        toast(on ? "已开始采集，报文会写入 capture/<日期>/"
+                 : "已停止采集，数据保留在 capture/ 下");
     }
 
     /** 保存「手机闹钟同步」偏好。 */

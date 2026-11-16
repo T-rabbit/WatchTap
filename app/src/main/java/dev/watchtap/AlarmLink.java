@@ -62,6 +62,8 @@ final class AlarmLink {
      */
     static final boolean USE_CLOCK_REPORT = true;
 
+    private static volatile boolean sRecvErrLogged;
+
     /** 调试用（只测通知，绝不触发任何闹钟推送） */
     static final String ACTION_NOTIFY_TEST = "dev.watchtap.DEBUG_NOTIFY";
 
@@ -138,12 +140,28 @@ final class AlarmLink {
                     if (evIdx < 0) continue;
                     api.hook(m).intercept(chain -> {
                         try {
+                            // 记住发送所需的句柄，供「手动上报」复用
+                            HealthTx.capture(chain, m, evIdx);
                             Object ev = chain.getArg(evIdx);
                             Object sid = ev.getClass().getMethod("getServiceId").invoke(ev);
                             Object cid = ev.getClass().getMethod("getCommandId").invoke(ev);
                             Object data = ev.getClass().getMethod("getData").invoke(ev);
                             int len = data instanceof byte[] ? ((byte[]) data).length : 0;
                             dbg("SEND sid=" + sid + " cid=" + cid + " len=" + len);
+                            int encS = -1;
+                            try {
+                                Object eo = ev.getClass().getMethod("getEncryptOption").invoke(ev);
+                                if (eo instanceof Integer) encS = (Integer) eo;
+                            } catch (Throwable ignored) {
+                            }
+                            String hexS = "";
+                            if (data instanceof byte[]) {
+                                StringBuilder sb = new StringBuilder();
+                                for (byte b : (byte[]) data) sb.append(String.format("%02x", b));
+                                hexS = sb.toString();
+                            }
+                            Capture.frame("SEND", ((Number) sid).intValue(),
+                                    ((Number) cid).intValue(), len, encS, hexS);
                         } catch (Throwable ignored) {
                         }
                         return chain.proceed();
@@ -164,6 +182,8 @@ final class AlarmLink {
                     if (evIdx < 0) continue;
                     api.hook(m).intercept(chain -> {
                         try {
+                            // 记住发送所需的句柄，供「手动上报」复用
+                            HealthTx.capture(chain, m, evIdx);
                             Object ev = chain.getArg(evIdx);
                             Object sid = ev.getClass().getMethod("getServiceId").invoke(ev);
                             Object cid = ev.getClass().getMethod("getCommandId").invoke(ev);
@@ -192,6 +212,8 @@ final class AlarmLink {
                     if (evIdx < 0) continue;
                     api.hook(m).intercept(chain -> {
                         try {
+                            // 记住发送所需的句柄，供「手动上报」复用
+                            HealthTx.capture(chain, m, evIdx);
                             Object ev = chain.getArg(evIdx);
                             Object sid = ev.getClass().getMethod("getServiceId").invoke(ev);
                             Object cid = ev.getClass().getMethod("getCommandId").invoke(ev);
@@ -203,14 +225,28 @@ final class AlarmLink {
                                 for (byte b : (byte[]) data) sb.append(String.format("%02x", b));
                                 hex = sb.toString();
                             }
+                            int encVal = -1;
+                            try {
+                                Object eo = ev.getClass().getMethod("getEncryptOption").invoke(ev);
+                                if (eo instanceof Integer) encVal = (Integer) eo;
+                            } catch (Throwable ignored) {
+                            }
                             dbg("RECV sid=" + sid + " cid=" + cid + " len=" + len + " hex=" + hex);
                             int sId = ((Number) sid).intValue();
                             int cId = ((Number) cid).intValue();
+                            Capture.frame("RECV", sId, cId, len, encVal, hex);
+                            if (sId == 5 && cId == 12 && data instanceof byte[]) {
+                                HeartRate.onResponse((byte[]) data);
+                            }
                             if (sId == 10) {
                                 if (cId == 24) onWatchDismiss();
                                 else if (cId == 25) onWatchSnooze();
                             }
-                        } catch (Throwable ignored) {
+                        } catch (Throwable t) {
+                            if (!sRecvErrLogged) {
+                                sRecvErrLogged = true;
+                                Logs.w("RECV hook 异常（仅首次记录）", t);
+                            }
                         }
                         return chain.proceed();
                     });
@@ -756,7 +792,7 @@ final class AlarmLink {
     private static final java.util.List<String> PRE = new java.util.ArrayList<>();
 
     /** 诊断日志：直接写宿主 App 自己的外部目录，不需要 root。 */
-    private static void dbg(String msg) {
+    static void dbg(String msg) {
         try {
             Context c = sCtx;
             if (c == null) {
