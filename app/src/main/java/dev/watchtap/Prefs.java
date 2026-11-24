@@ -53,6 +53,9 @@ final class Prefs {
     /** 手机闹钟同步功能总开关（UI 控制，默认开） */
     static final String K_ALARM_SYNC = "alarmSync";
 
+    /** 报文采集开关（默认关） */
+    static final String K_CAPTURE = "capture";
+
     private Prefs() {}
 
     /** 本进程自己的偏好文件。 */

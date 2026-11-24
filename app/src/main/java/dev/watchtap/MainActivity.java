@@ -32,6 +32,10 @@ public class MainActivity extends Activity {
     private TextView mSleepValue, mSleepSub;
     private TextView mHrValue, mHrSub, mHrUpdated;
     private Button mHrBtn;
+    // 心率结果缓存（由 hook 进程广播过来）
+    private int mHrBpm = -1, mHrMin = -1, mHrMax = -1, mHrCount = 0;
+    private long mHrTs = 0;
+    private String mHrMsg = "";
     private TextView mPermBar;
     private TextView mDiag;
     private Button mUpdateBtn;
@@ -470,6 +474,7 @@ public class MainActivity extends Activity {
         if (!mRunning) return;
         refresh();
         refreshHeartRate();
+        registerHrReceiver();
         mHandler.postDelayed(this::tick, 1000L);
     }
 
@@ -822,44 +827,106 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** 手动触发一次心率上报。 */
+    /** 手动触发一次心率上报（真正发送在 hook 进程里做，这里只发指令）。 */
     private void doFetchHeartRate() {
-        if (!HealthTx.ready()) {
-            toast("通道还没就绪：请让 OPPO 健康先发一次数据（打开 App 或同步一次）");
-            return;
+        try {
+            android.content.Intent i = new android.content.Intent(AlarmLink.ACTION_NOTIFY_TEST);
+            i.setPackage("com.heytap.health");
+            i.putExtra("hr", "1");
+            sendBroadcast(i);
+            toast("已请求，等手表回传…");
+        } catch (Throwable t) {
+            toast("发送请求失败：" + t);
         }
-        toast("已请求，等手表回传…");
-        new Thread(() -> {
-            boolean ok = HeartRate.fetch(0);
-            runOnUiThread(() -> {
-                refreshHeartRate();
-                if (!ok) toast("请求发送失败，看日志");
-            });
-        }).start();
         mHrBtn.setEnabled(false);
-        mHrBtn.postDelayed(() -> mHrBtn.setEnabled(true), 5000);
+        mHrBtn.postDelayed(() -> { if (mHrBtn != null) mHrBtn.setEnabled(true); }, 6000);
     }
 
-    /** 刷新心率卡片。 */
+    /** hook 进程回报的结果。 */
+    private final android.content.BroadcastReceiver mHrResult = new android.content.BroadcastReceiver() {
+        @Override public void onReceive(android.content.Context c, android.content.Intent i) {
+            try {
+                if (i != null && i.hasExtra("bpm")) {
+                    mHrBpm = i.getIntExtra("bpm", -1);
+                    mHrMin = i.getIntExtra("min", -1);
+                    mHrMax = i.getIntExtra("max", -1);
+                    mHrCount = i.getIntExtra("count", 0);
+                    mHrTs = i.getLongExtra("ts", 0);
+                    String m = i.getStringExtra("msg");
+                    mHrMsg = m == null ? "" : m;
+                }
+            } catch (Throwable ignored) {
+            }
+            refreshHeartRate();
+        }
+    };
+
+    private boolean mHrRxDone;
+
+    private void registerHrReceiver() {
+        if (mHrRxDone) return;
+        try {
+            android.content.IntentFilter f =
+                    new android.content.IntentFilter(AlarmLink.ACTION_HR_RESULT);
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                registerReceiver(mHrResult, f, android.content.Context.RECEIVER_EXPORTED);
+            } else {
+                registerReceiver(mHrResult, f);
+            }
+            mHrRxDone = true;
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 刷新心率卡片（数据来自 provider，跨进程共享）。 */
     private void refreshHeartRate() {
         if (mHrValue == null) return;
-        mHrValue.setText(HeartRate.statusLine());
-        mHrValue.setTextColor(HeartRate.fresh() ? 0xFF34D399 : 0xFFE5E7EB);
-        String detail = HeartRate.detailLine();
-        if (!HealthTx.ready()) detail = detail + "  ·  通道待就绪";
-        mHrSub.setText(detail);
-        mHrUpdated.setText(HeartRate.updatedLine());
+        int bpm = mHrBpm, min = mHrMin, max = mHrMax, cnt = mHrCount;
+        long ts = mHrTs;
+        String msg = mHrMsg;
+
+        if (bpm < 0) {
+            mHrValue.setText(msg == null || msg.isEmpty() ? "还没有数据" : msg);
+            mHrValue.setTextColor(0xFFE5E7EB);
+            mHrSub.setText("点下面按钮拉取一次");
+            mHrUpdated.setText("");
+            return;
+        }
+
+        long now = System.currentTimeMillis() / 1000L;
+        boolean fresh = ts > 0 && now - ts < 300;
+        mHrValue.setText(bpm + " bpm  ·  " + cnt + " 点");
+        mHrValue.setTextColor(fresh ? 0xFF34D399 : 0xFFE5E7EB);
+        mHrSub.setText("范围 " + min + "~" + max + " bpm");
+        mHrUpdated.setText("更新于 " + agoText(ts) + "（" + hhmm(ts) + "）");
         mHrUpdated.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
         mHrUpdated.setTextColor(0xFF6B7280);
+    }
+
+    private String agoText(long sec) {
+        if (sec <= 0) return "未知";
+        long ago = System.currentTimeMillis() / 1000L - sec;
+        if (ago < 60) return "刚刚";
+        if (ago < 3600) return (ago / 60) + " 分钟前";
+        if (ago < 86400) return (ago / 3600) + " 小时前";
+        return (ago / 86400) + " 天前";
+    }
+
+    private String hhmm(long sec) {
+        if (sec <= 0) return "-";
+        java.util.Calendar c = java.util.Calendar.getInstance();
+        c.setTimeInMillis(sec * 1000L);
+        return String.format(java.util.Locale.US, "%02d:%02d",
+                c.get(java.util.Calendar.HOUR_OF_DAY), c.get(java.util.Calendar.MINUTE));
     }
 
     /** 保存「报文采集」偏好。 */
     private void saveCapturePref(boolean on) {
         Prefs.setBool(this, Prefs.K_CAPTURE, on);
         ProviderPrefs.setBoolean(this, Prefs.K_CAPTURE, on);
+        // hook 进程读的是这个文件，必须同步过去否则开关不生效
+        HookPrefsChannel.push(Prefs.K_CAPTURE, on);
         StateStore.logLocal(this, "报文采集：" + (on ? "已开启" : "已关闭"));
-        toast(on ? "已开始采集，报文会写入 capture/<日期>/"
-                 : "已停止采集，数据保留在 capture/ 下");
     }
 
     /** 保存「手机闹钟同步」偏好。 */
@@ -903,7 +970,7 @@ public class MainActivity extends Activity {
     }
 
     private void toast(String s) {
-        android.widget.Toast.makeText(this, s, android.widget.Toast.LENGTH_SHORT).show();
+        // 不弹出 Toast；操作结果由界面状态与日志呈现。
     }
 
     @Override

@@ -29,18 +29,57 @@ final class HealthTx {
 
     /** 在 SEND hook 里调用，保存句柄。 */
     static void capture(XposedInterface.Chain chain, Method sendMethod, int evIdx) {
+        AlarmLink.dbg("capture() entered, evIdx=" + evIdx);
         try {
-            if (sSender != null && sMac != null) return;   // 已有就不重复取
-            Object self = chain.getThisObject();
-            Object role = chain.getArg(0);
-            Object mac = chain.getArg(1);
-            if (self == null || mac == null) return;
+            if (sSender != null && sMac != null) {
+                AlarmLink.dbg("capture: already have mac=" + sMac);
+                return;
+            }
+            Object self = null;
+            try { self = chain.getThisObject(); } catch (Throwable t) {
+                AlarmLink.dbg("capture: getThisObject threw " + t);
+            }
+            AlarmLink.dbg("capture: self=" + (self == null ? "null" : self.getClass().getName()));
+            // 参数位置按实际类型定位，不假设固定下标
+            Object role = null;
+            String mac = null;
+            Object ev = chain.getArg(evIdx);
+            // 诊断：打印每个参数的类型与摘要
+            try {
+                StringBuilder sb = new StringBuilder("args:");
+                for (int i = 0; i < 4; i++) {
+                    Object a = null;
+                    try { a = chain.getArg(i); } catch (Throwable ignored) {}
+                    sb.append(" [").append(i).append("]=")
+                      .append(a == null ? "null" : a.getClass().getSimpleName())
+                      .append("(").append(a == null ? "" : String.valueOf(a)).append(")");
+                }
+                AlarmLink.dbg(sb.toString());
+            } catch (Throwable ignored) {
+            }
+            for (int i = 0; i < 4; i++) {
+                if (i == evIdx) continue;
+                Object a = null;
+                try {
+                    a = chain.getArg(i);
+                } catch (Throwable ignored) {
+                    continue;
+                }
+                if (a == null) continue;
+                if (mac == null && a instanceof String) {
+                    String sv = (String) a;
+                    if (sv.matches("(?i)[0-9a-f]{2}(:[0-9a-f]{2}){5}")) mac = sv;
+                } else if (role == null && !(a instanceof String) && !(a instanceof byte[])) {
+                    role = a;
+                }
+            }
+            if (mac == null) return;
             sSender = self;
             sRole = role;
-            sMac = String.valueOf(mac);
+            sMac = mac;
             sSendMethod = sendMethod;
             sEventCls = chain.getArg(evIdx).getClass();
-            AlarmLink.dbg("HealthTx captured: mac=" + sMac);
+            AlarmLink.dbg("HealthTx-OK-v2 mac=" + sMac);
         } catch (Throwable ignored) {
         }
     }
@@ -64,21 +103,12 @@ final class HealthTx {
     static boolean request(int sid, int cid, byte[] payload) {
         if (!ready()) return false;
         try {
-            // MessageEvent(int serviceId, int commandId, int encrypt, byte[] data)
-            Object ev = null;
-            for (java.lang.reflect.Constructor<?> ctor : sEventCls.getDeclaredConstructors()) {
-                Class<?>[] ps = ctor.getParameterTypes();
-                if (ps.length == 4 && ps[0] == int.class && ps[1] == int.class
-                        && ps[2] == int.class && ps[3] == byte[].class) {
-                    ctor.setAccessible(true);
-                    ev = ctor.newInstance(sid, cid, 1 /* ENCRYPT_NO */, payload);
-                    break;
-                }
-            }
-            if (ev == null) {
-                AlarmLink.dbg("HealthTx: 找不到 MessageEvent(int,int,int,byte[]) 构造");
-                return false;
-            }
+            // 三参构造器保留 SDK 默认 transport=2 (BT)、encrypt=0。
+            // 四参构造器的第三参是 transport，不能当 encrypt 传 1（Wi-Fi）。
+            java.lang.reflect.Constructor<?> ctor = sEventCls.getDeclaredConstructor(
+                    int.class, int.class, byte[].class);
+            ctor.setAccessible(true);
+            Object ev = ctor.newInstance(sid, cid, payload);
             sSendMethod.setAccessible(true);
             Object r = sSendMethod.invoke(sSender, sRole, sMac, ev, null);
             AlarmLink.dbg("HealthTx.request sid=" + sid + " cid=" + cid

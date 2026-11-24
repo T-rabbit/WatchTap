@@ -63,6 +63,16 @@ public class StateStore extends ContentProvider {
     public static final String K_MUTE = "mute";
     /** 是否启用「修复联动开关显示」 */
     public static final String K_ALARM_SYNC = "alarmSync";
+    public static final String K_CAPTURE = "capture";
+
+    /** 心率：最近一次拉取结果（由 hook 进程写入） */
+    public static final String K_HR_BPM = "hrBpm";
+    public static final String K_HR_MIN = "hrMin";
+    public static final String K_HR_MAX = "hrMax";
+    public static final String K_HR_COUNT = "hrCount";
+    public static final String K_HR_TS = "hrTs";
+    public static final String K_HR_MSG = "hrMsg";
+    public static final String METHOD_SET_HR = "setHr";
     public static final String K_FIX_SWITCH = "fixSwitch";
     /** 睡眠模式变化时是否发通知给自动化软件 */
     public static final String K_NOTIFY = "notify";
@@ -148,6 +158,17 @@ public class StateStore extends ContentProvider {
             if (extras.containsKey(K_FIX_SWITCH)) {
                 e.putBoolean(K_FIX_SWITCH, extras.getBoolean(K_FIX_SWITCH, false));
                 e.putBoolean(K_ALARM_SYNC, extras.getBoolean(K_ALARM_SYNC, true));
+                if (extras.containsKey(K_CAPTURE)) {
+                    e.putBoolean(K_CAPTURE, extras.getBoolean(K_CAPTURE, false));
+                }
+                if (extras.containsKey(K_HR_BPM)) {
+                    e.putInt(K_HR_BPM, extras.getInt(K_HR_BPM, -1));
+                    e.putInt(K_HR_MIN, extras.getInt(K_HR_MIN, -1));
+                    e.putInt(K_HR_MAX, extras.getInt(K_HR_MAX, -1));
+                    e.putInt(K_HR_COUNT, extras.getInt(K_HR_COUNT, 0));
+                    e.putLong(K_HR_TS, extras.getLong(K_HR_TS, 0));
+                    e.putString(K_HR_MSG, extras.getString(K_HR_MSG, ""));
+                }
                 e.putBoolean(K_NOTIFY, extras.getBoolean(K_NOTIFY, false));
                 e.putBoolean(K_MUTE, extras.getBoolean(K_MUTE, false));
             }
@@ -191,6 +212,13 @@ public class StateStore extends ContentProvider {
             b.putBoolean(K_NOTIFY, notifyV);
             b.putBoolean(K_FIX_SWITCH, p.getBoolean(K_FIX_SWITCH, false));
             b.putBoolean(K_ALARM_SYNC, ensureBool(pp, Prefs.K_ALARM_SYNC, true));
+            b.putBoolean(K_CAPTURE, ensureBool(pp, K_CAPTURE, false));
+            b.putInt(K_HR_BPM, p.getInt(K_HR_BPM, -1));
+            b.putInt(K_HR_MIN, p.getInt(K_HR_MIN, -1));
+            b.putInt(K_HR_MAX, p.getInt(K_HR_MAX, -1));
+            b.putInt(K_HR_COUNT, p.getInt(K_HR_COUNT, 0));
+            b.putLong(K_HR_TS, p.getLong(K_HR_TS, 0));
+            b.putString(K_HR_MSG, p.getString(K_HR_MSG, ""));
             b.putLong(K_ZEN_TS, p.getLong(K_ZEN_TS, 0));
             b.putLong(K_UPDATED, p.getLong(K_UPDATED, 0));
             b.putString(K_COUNTS, p.getString(K_COUNTS, ""));

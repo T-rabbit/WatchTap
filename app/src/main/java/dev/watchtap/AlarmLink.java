@@ -67,6 +67,11 @@ final class AlarmLink {
     /** 调试用（只测通知，绝不触发任何闹钟推送） */
     static final String ACTION_NOTIFY_TEST = "dev.watchtap.DEBUG_NOTIFY";
 
+    /** UI → hook 进程：请拉一次心率 */
+    static final String ACTION_FETCH_HR = "dev.watchtap.FETCH_HR";
+    /** hook 进程 → UI：拉取结果 */
+    static final String ACTION_HR_RESULT = "dev.watchtap.HR_RESULT";
+
     private static volatile Object sCtrl;
     private static volatile Class<?> sCtrlCls;
     private static volatile Context sCtx;
@@ -183,7 +188,6 @@ final class AlarmLink {
                     api.hook(m).intercept(chain -> {
                         try {
                             // 记住发送所需的句柄，供「手动上报」复用
-                            HealthTx.capture(chain, m, evIdx);
                             Object ev = chain.getArg(evIdx);
                             Object sid = ev.getClass().getMethod("getServiceId").invoke(ev);
                             Object cid = ev.getClass().getMethod("getCommandId").invoke(ev);
@@ -204,7 +208,7 @@ final class AlarmLink {
 
             // 旁路：记录所有「手表 → 手机」报文，用于确认稍后提醒/关闭是否回传
             try {
-                Class<?> x = Class.forName("xs.e", false, cl);
+                Class<?> x = inboundClass(cl);
                 for (Method m : x.getDeclaredMethods()) {
                     if (!"onMessageReceived".equals(m.getName())) continue;
                     if (m.getParameterCount() != 2) continue;
@@ -213,7 +217,6 @@ final class AlarmLink {
                     api.hook(m).intercept(chain -> {
                         try {
                             // 记住发送所需的句柄，供「手动上报」复用
-                            HealthTx.capture(chain, m, evIdx);
                             Object ev = chain.getArg(evIdx);
                             Object sid = ev.getClass().getMethod("getServiceId").invoke(ev);
                             Object cid = ev.getClass().getMethod("getCommandId").invoke(ev);
@@ -289,7 +292,36 @@ final class AlarmLink {
                 public void onReceive(Context c, Intent i) {
                     String a = i == null ? null : i.getAction();
                     dbg("onReceive action=" + a);
+                    if (ACTION_FETCH_HR != null && ACTION_FETCH_HR.equals(a)) {
+                        Capture.meta("收到 FETCH_HR 广播");
+                    }
+                    // 注意：Android 14+ 对动态接收器的自定义 action 有过滤，
+                    // FETCH_HR 单独注册不生效（实测），所以挂在已验证可用的
+                    // ACTION_DEBUG 上，用 extra 区分。
+
                     if (ACTION_NOTIFY_TEST.equals(a)) {
+                        String hrVal = null;
+                        String stVal = null;
+                        try {
+                            hrVal = i == null ? null : i.getStringExtra("hr");
+                            stVal = i == null ? null : i.getStringExtra("state");
+                        } catch (Throwable t) {
+                            dbg("read extras threw: " + t);
+                        }
+                        dbg("NOTIFY extras: hr=" + hrVal + " state=" + stVal);
+                        // 心率拉取挂在这条「只发通知、绝不碰闹钟」的通道上
+                        boolean wantHr = hrVal != null;
+                        if (wantHr) {
+                            boolean ok = false;
+                            try {
+                                ok = HealthTx.ready() && HeartRate.fetch(0);
+                            } catch (Throwable t) {
+                                dbg("fetchHr threw: " + t);
+                            }
+                            dbg("fetchHr ok=" + ok + " ready=" + HealthTx.ready());
+                            broadcastHrResult(ok);
+                            return;
+                        }
                         boolean on = !"off".equalsIgnoreCase(
                                 String.valueOf(i.getStringExtra("state")));
                         boolean pref = State.notifyPref();
@@ -356,6 +388,7 @@ final class AlarmLink {
             IntentFilter f = new IntentFilter();
             f.addAction(ACTION_DEBUG);
             f.addAction(ACTION_NOTIFY_TEST);
+            f.addAction(ACTION_FETCH_HR);
             f.addAction(AlarmManager.ACTION_NEXT_ALARM_CLOCK_CHANGED);
             f.addAction(ProxyReceiver.ACTION_PROXY);
             f.addAction(ClockChannel.ACTION_ALARM_FIRED);
@@ -788,6 +821,20 @@ final class AlarmLink {
         }
     }
 
+    /** 把拉取结果回报给 UI 进程。 */
+    private static void broadcastHrResult(boolean ok) {
+        try {
+            Context c = sCtx;
+            if (c == null) return;
+            Intent i = new Intent(ACTION_HR_RESULT);
+            i.setPackage("dev.watchtap");
+            i.putExtra("ok", ok);
+            i.putExtra("ready", HealthTx.ready());
+            c.sendBroadcast(i);
+        } catch (Throwable ignored) {
+        }
+    }
+
     /** 安装阶段（还没有 Context）先缓存，attach 后统一落盘。 */
     private static final java.util.List<String> PRE = new java.util.ArrayList<>();
 
@@ -795,6 +842,15 @@ final class AlarmLink {
     static void dbg(String msg) {
         try {
             Context c = sCtx;
+            if (c == null) {
+                // 兜底：直接向 ActivityThread 要 Application，避免进 PRE 后永远刷不出
+                try {
+                    Class<?> at = Class.forName("android.app.ActivityThread");
+                    Object app = at.getMethod("currentApplication").invoke(null);
+                    if (app instanceof Context) c = ((Context) app).getApplicationContext();
+                } catch (Throwable ignored) {
+                }
+            }
             if (c == null) {
                 if (PRE.size() < 80) PRE.add(msg);
                 return;
@@ -817,6 +873,26 @@ final class AlarmLink {
             }
         } catch (Throwable ignored) {
         }
+    }
+
+    /** BTClient 的混淆名随版本变化；只接受具有完整接收签名的候选。 */
+    private static Class<?> inboundClass(ClassLoader cl) throws ClassNotFoundException {
+        for (String name : new String[]{"et.e", "xs.e"}) {
+            try {
+                Class<?> c = Class.forName(name, false, cl);
+                for (Method m : c.getDeclaredMethods()) {
+                    Class<?>[] ps = m.getParameterTypes();
+                    if ("onMessageReceived".equals(m.getName()) && ps.length == 2
+                            && ps[0] == String.class
+                            && ps[1].getName().endsWith(".MessageEvent")) {
+                        dbg("inbound class=" + name);
+                        return c;
+                    }
+                }
+            } catch (ClassNotFoundException ignored) {
+            }
+        }
+        throw new ClassNotFoundException("BTClient: no compatible receive signature");
     }
 
     private static int paramIndexEndingWith(Method m, String suffix) {

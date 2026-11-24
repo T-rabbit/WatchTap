@@ -98,7 +98,9 @@ final class SwitchFixer {
                 if (m.getParameterCount() != 0) continue;
                 if (m.getReturnType() != boolean.class) continue;
                 String n = m.getName();
-                if (!"D0".equals(n) && !"isPhoneSupportZenModeLinkage".equals(n)) continue;
+                // 6.11.7: H0()；6.10.15: D0()。均已核对 SDK >= 30 + v.g() 判据。
+                if (!"H0".equals(n) && !"D0".equals(n)
+                        && !"isPhoneSupportZenModeLinkage".equals(n)) continue;
 
                 api.hook(m).intercept(chain -> {
                     if (!State.fixSwitchEnabled()) return chain.proceed();

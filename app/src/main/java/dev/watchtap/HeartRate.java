@@ -17,6 +17,10 @@ import java.util.List;
 final class HeartRate {
 
     static final int SID = 5;
+
+    /** 心率结果文件（hook 写，UI 读）。两边都能访问这个路径。 */
+    static final java.io.File HR_FILE =
+            new java.io.File("/sdcard/Android/data/com.heytap.health/files/heartrate.txt");
     static final int CID = 12;
 
     /** 最近一次结果 */
@@ -107,9 +111,52 @@ final class HeartRate {
             if (lastTs > 0) sLastDataTs = lastTs;
             sMessage = "已更新 " + pts.size() + " 个点";
             Capture.meta("心率到达 " + pts.size() + " 点，最新 " + last + "bpm @ " + fmt(lastTs));
+            pushToProvider();
         } catch (Throwable t) {
             sMessage = "解析失败: " + t;
         }
+    }
+
+    /**
+     * 把结果广播给 UI 进程。
+     *
+     * 跨进程传递试过三种都不行：
+     *   - provider + createPackageContext：hook 进程拿不到 authority
+     *   - 写 /sdcard/Android/data/<其它包>/：分区存储禁止跨包读
+     *   - su 复制：App uid 下没有可用的 su
+     * 广播是最稳的：两边都能收发，extras 实测可读。
+     */
+    private static void pushToProvider() {
+        try {
+            android.content.Context c = hostCtx();
+            if (c == null) return;
+            android.content.Intent i = new android.content.Intent(AlarmLink.ACTION_HR_RESULT);
+            i.setPackage("dev.watchtap");
+            i.putExtra("bpm", sLastBpm);
+            i.putExtra("min", sMinBpm);
+            i.putExtra("max", sMaxBpm);
+            i.putExtra("count", sCount);
+            i.putExtra("ts", sLastDataTs);
+            i.putExtra("msg", sMessage == null ? "" : sMessage);
+            i.putExtra("ok", true);
+            i.putExtra("ready", true);
+            c.sendBroadcast(i);
+            AlarmLink.dbg("HR 广播: " + sLastBpm + "bpm");
+        } catch (Throwable t) {
+            AlarmLink.dbg("HR 广播失败: " + t);
+        }
+    }
+
+    private static android.content.Context hostCtx() {
+        try {
+            Class<?> at = Class.forName("android.app.ActivityThread");
+            Object app = at.getMethod("currentApplication").invoke(null);
+            if (app instanceof android.content.Context) {
+                return ((android.content.Context) app).getApplicationContext();
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
     }
 
     /** 解析回包 → [index, bpm, absoluteTs] */

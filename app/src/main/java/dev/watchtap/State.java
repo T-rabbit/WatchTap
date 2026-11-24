@@ -124,6 +124,7 @@ final class State {
         if (first) {
             Logs.i("首次读取睡眠模式：" + (on == 1 ? "开" : "关")
                     + "（仅记录，不触发联动）");
+            Capture.meta("首次读取睡眠模式=" + (on == 1 ? "开" : "关") + "（" + who + "）");
         } else if (changed) {
             Logs.key(on == 1 ? "🌙" : "☀️",
                     "手表" + (on == 1 ? "进入" : "退出") + "睡眠模式（" + who + "）");
@@ -134,6 +135,8 @@ final class State {
         push();
 
         if (changed) {
+            Capture.meta("睡眠模式变化 -> " + (on == 1 ? "进入睡眠" : "退出睡眠")
+                    + "（来源 " + who + "）");
             autoDnd(on == 1, mutePref());
             maybeNotify(on == 1);
         }

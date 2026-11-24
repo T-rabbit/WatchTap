@@ -33,14 +33,16 @@ public class Main extends XposedModule {
 
     /** 手表→手机 全量消息入口候选（6.10.15 → 旧版本） */
     private static final String[] CAPTURE_CLASSES = {
-            "xs.e",
+            "et.e", // OPPO 健康 6.11.7
+            "xs.e", // OPPO 健康 6.10.15
             "com.heytap.health.connect.rawapi.impl.listener.LM3Message$mMessageCallback$1",
             "com.heytap.health.devicemanager.btclient.BTClient",
     };
 
     /** SleepModeManager 候选（6.10.15 → 旧版本） */
     private static final String[] SLEEP_MGR_CLASSES = {
-            "com.heytap.device.sleep.n",
+            "com.heytap.device.sleep.o", // 6.11.7
+            "com.heytap.device.sleep.n", // 6.10.15
             "com.heytap.device.sleep.SleepModeManager",
     };
 
@@ -242,6 +244,18 @@ public class Main extends XposedModule {
                             int len = data == null ? 0 : data.length;
                             State.noteMessage(sid, cid, len);
 
+                            // 加密标记：ENCRYPT_YES=2。分析睡眠数据必须先确认这一点
+                            int enc = -1;
+                            try {
+                                Object e = call(event, "getEncryptOption");
+                                if (e instanceof Integer) enc = (Integer) e;
+                            } catch (Throwable ignored) {
+                            }
+                            if (len >= 64) {
+                                Logs.i("大报文 sid=" + sid + " cid=" + cid
+                                        + " len=" + len + " encrypt=" + enc);
+                            }
+
                             // 0xcc / 0x49 = 读睡眠设置回包，field3 = startNow
                             if (sid == 5 && (cid == 0xcc || cid == 0x49) && len >= 4) {
                                 int f3 = fieldOf(data, 3);
@@ -255,16 +269,22 @@ public class Main extends XposedModule {
                                 }
                             }
 
-                            // 0x20 = SleepStateChangeNotify：f1=startTime, f2=endTime, f3=state
+                            // cid=0x20 (32) = SleepStateChangeNotify
+                            //   实测 f3: 1=进入睡眠, 2=退出睡眠
+                            //   注意不能把 f3 原样当状态存：UI 只认 0/1，
+                            //   存 2 会导致界面一直显示「--」。
                             if (sid == 5 && cid == 0x20 && len >= 2) {
-                                int state = fieldOf(data, 3);
+                                int raw = fieldOf(data, 3);
                                 int start = fieldOf(data, 1);
-                                if (state >= 0) {
-                                    Logs.fire("手表上报", "生理状态="
-                                            + (state == 1 ? "睡眠" : "清醒")
-                                            + "（来自报文 cid=0x20）");
+                                if (raw == 1 || raw == 2) {
+                                    int state = (raw == 1) ? 1 : 0;   // 归一成 1=睡, 0=醒
+                                    String what = (raw == 1) ? "睡眠" : "清醒";
+                                    Logs.fire("手表上报", "生理状态=" + what
+                                            + "（cid=0x20 raw=" + raw + "）");
                                     State.setSleepState(state,
                                             start > 0 ? start : System.currentTimeMillis() / 1000L);
+                                } else if (raw >= 0) {
+                                    Logs.i("cid=0x20 未知状态值 raw=" + raw);
                                 }
                             }
                         }
