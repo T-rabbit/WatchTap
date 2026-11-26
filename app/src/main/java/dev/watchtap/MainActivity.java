@@ -10,6 +10,8 @@ import android.util.TypedValue;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
+import android.view.Gravity;
+import android.widget.FrameLayout;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -22,7 +24,7 @@ import java.util.Locale;
 /**
  * WatchTap 界面。
  *
- * 三个状态卡片 + 勿扰开关 + 操作日志。
+ * 总览、联动设置、工具诊断三个页面。
  * 数据由 hook 进程写入 StateStore，本界面每秒读取一次。
  */
 public class MainActivity extends Activity {
@@ -52,7 +54,14 @@ public class MainActivity extends Activity {
 
     private final Handler mHandler = new Handler(Looper.getMainLooper());
     private boolean mRunning = true;
-    private int mDp;
+    private float mDp;
+    private boolean mBindingUi;
+    private final ScrollView[] mPages = new ScrollView[3];
+    private final LinearLayout[] mNavItems = new LinearLayout[3];
+    private final TextView[] mNavLabels = new TextView[3];
+    private int mSelectedPage;
+    private LinearLayout mDetails;
+    private TextView mDetailsToggle;
 
     private final SimpleDateFormat mFmt =
             new SimpleDateFormat("HH:mm:ss", Locale.US);
@@ -60,309 +69,413 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        mDp = (int) getResources().getDisplayMetrics().density;
+        mDp = getResources().getDisplayMetrics().density;
+        getWindow().setStatusBarColor(WatchUi.BG);
+        getWindow().setNavigationBarColor(WatchUi.BG);
+        getWindow().getDecorView().setSystemUiVisibility(0);
 
-        ScrollView scroll = new ScrollView(this);
-        scroll.setBackgroundColor(0xFF0F1115);
-
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        int pad = dp(16);
-        root.setPadding(pad, dp(8), pad, dp(32));
-
-        // 标题
-        TextView title = new TextView(this);
-        title.setText("WatchTap");
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
-        title.setTextColor(Color.WHITE);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        root.addView(title, lp(pad, dp(6), pad, dp(1)));
-
-        TextView subtitle = new TextView(this);
-        subtitle.setText("手表状态监控 · 每秒刷新");
-        subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        subtitle.setTextColor(0xFF8B94A3);
-        root.addView(subtitle, lp(pad, 0, pad, dp(10)));
-
-        // 权限提示条
-        mPermBar = new TextView(this);
-        mPermBar.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        mPermBar.setTextColor(Color.WHITE);
-        mPermBar.setBackgroundColor(0xFFDC2626);
-        int pp = dp(12);
-        mPermBar.setPadding(pp, pp, pp, pp);
-        mPermBar.setText("⚠ 未授予勿扰权限，点此授权 →");
-        mPermBar.setOnClickListener(v -> openDndSettings());
-        mPermBar.setVisibility(View.GONE);
-        root.addView(mPermBar, lp(pad, 0, pad, dp(12)));
-
-        // 卡片 1: 手表睡眠模式
-        mSleepModeValue = new TextView(this);
-        mSleepModeSub = new TextView(this);
-        root.addView(card("手表睡眠模式", mSleepModeValue, mSleepModeSub));
-
-        // 卡片 2: 手机勿扰
-        mDndValue = new TextView(this);
-        mDndSub = new TextView(this);
-        root.addView(card("手机勿扰模式", mDndValue, mDndSub));
-
-        // 卡片 3: 生理睡眠
-        mSleepValue = new TextView(this);
-        mSleepSub = new TextView(this);
-        root.addView(card("生理睡眠检测", mSleepValue, mSleepSub));
-
-        // 心率：按需拉取
-        mHrValue = new TextView(this);
-        mHrSub = new TextView(this);
-        mHrUpdated = new TextView(this);
-        LinearLayout hrCard = card("手表心率", mHrValue, mHrSub);
-        hrCard.addView(mHrUpdated, lp(0, dp(2), 0, 0));
-
-        mHrBtn = new Button(this);
-        mHrBtn.setText("上报一次");
-        mHrBtn.setAllCaps(false);
-        mHrBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        mHrBtn.setTextColor(Color.WHITE);
-        mHrBtn.setBackgroundColor(0xFF2563EB);
-        mHrBtn.setMinHeight(0);
-        mHrBtn.setMinimumHeight(0);
-        mHrBtn.setPadding(dp(10), dp(6), dp(10), dp(6));
-        mHrBtn.setOnClickListener(v -> doFetchHeartRate());
-        hrCard.addView(mHrBtn, lp(0, dp(8), 0, 0));
-        root.addView(hrCard);
-
-        // 开关区（统一构造）
-        mMuteSwitch = makeSwitch(false, this::saveMutePref);
-        root.addView(switchRow("同步静音",
-                "开启后勿扰会静音全部通知；关闭则允许优先通知",
-                mMuteSwitch));
-
-        mNotifySwitch = makeSwitch(false, this::saveNotifyPref);
-        root.addView(switchRow("通知其他应用",
-                "手表进入/退出睡眠模式时发一条安静通知，供 Tasker 等自动化捕获",
-                mNotifySwitch));
-
-        mCaptureSwitch = makeSwitch(false, this::saveCapturePref);
-        root.addView(switchRow("报文采集（睡眠分析用）",
-                "把收到的每条报文完整写入 capture/<日期>/frame.log，供离线分析；"
-                        + "不影响功能，文件不会自动删除",
-                mCaptureSwitch));
-
-        mAlarmSyncSwitch = makeSwitch(false, this::saveAlarmSyncPref);
-        root.addView(switchRow("手机闹钟同步",
-                "手机闹钟响时推送到手表；手表点关闭/稍后提醒会同步操作手机闹钟（稍后固定 5 分钟）",
-                mAlarmSyncSwitch));
-
-        // 修复联动开关（按钮式：点一下执行一次，不需要保持开启）
-        mFixBtn = new Button(this);
-        mFixBtn.setText("修复联动开关显示");
-        mFixBtn.setAllCaps(false);
-        mFixBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        mFixBtn.setTextColor(Color.WHITE);
-        mFixBtn.setBackgroundColor(0xFF7C3AED);
-        mFixBtn.setMinHeight(0);
-        mFixBtn.setMinimumHeight(0);
-        mFixBtn.setPadding(dp(8), dp(6), dp(8), dp(6));
-        mFixBtn.setOnClickListener(v -> doFixSwitch());
-
-        root.addView(mFixBtn, lp(pad, dp(6), pad, dp(2)));
-
-        TextView fixDesc = new TextView(this);
-        fixDesc.setText("让 OPPO 健康里出现「睡眠模式联动手机免打扰」选项。"
-                + "点一次即可，之后重启 OPPO 健康生效");
-        fixDesc.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
-        fixDesc.setTextColor(0xFF6B7280);
-        fixDesc.setPadding(dp(4), 0, dp(4), dp(4));
-        root.addView(fixDesc);
-
-        mFixStatus = new TextView(this);
-        mFixStatus.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
-        mFixStatus.setTextColor(0xFF9CA3AF);
-        mFixStatus.setPadding(dp(4), dp(2), dp(4), dp(6));
-        mFixStatus.setVisibility(View.GONE);
-        root.addView(mFixStatus);
-
-        // 勿扰按钮
-        mDndBtn = new Button(this);
-        mDndBtn.setText("切换勿扰");
-        mDndBtn.setAllCaps(false);
-        mDndBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        mDndBtn.setTextColor(Color.WHITE);
-        mDndBtn.setBackgroundColor(0xFF2563EB);
-        mDndBtn.setMinHeight(0);
-        mDndBtn.setMinimumHeight(0);
-        mDndBtn.setPadding(dp(8), dp(6), dp(8), dp(6));
-        mDndBtn.setOnClickListener(v -> toggleDnd());
-        root.addView(mDndBtn, lp(pad, dp(8), pad, dp(4)));
-
-        // 诊断按钮：逐条测试勿扰写入路径
-        Button probe = new Button(this);
-        probe.setText("诊断勿扰写入");
-        probe.setAllCaps(false);
-        probe.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        probe.setMinHeight(0);
-        probe.setMinimumHeight(0);
-        probe.setPadding(dp(8), dp(6), dp(8), dp(6));
-        probe.setTextColor(0xFFCBD5E1);
-        probe.setBackgroundColor(0xFF7C2D12);
-        probe.setOnClickListener(v -> runProbe());
-        root.addView(probe, lp(pad, dp(4), pad, dp(4)));
-
-        // 刷新按钮
-        Button refresh = new Button(this);
-        refresh.setText("刷新状态");
-        refresh.setAllCaps(false);
-        refresh.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        refresh.setMinHeight(0);
-        refresh.setMinimumHeight(0);
-        refresh.setPadding(dp(8), dp(6), dp(8), dp(6));
-        refresh.setTextColor(0xFFCBD5E1);
-        refresh.setBackgroundColor(0xFF1E293B);
-        refresh.setOnClickListener(v -> {
-            StateStore.logLocal(this, "UI.refresh 手动刷新");
-            refresh();
-        });
-        root.addView(refresh, lp(pad, dp(4), pad, dp(4)));
-
-        // 检查更新
-        mUpdateBtn = new Button(this);
-        mUpdateBtn.setText("检查更新");
-        mUpdateBtn.setAllCaps(false);
-        mUpdateBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        mUpdateBtn.setMinHeight(0);
-        mUpdateBtn.setMinimumHeight(0);
-        mUpdateBtn.setPadding(dp(8), dp(6), dp(8), dp(6));
-        mUpdateBtn.setTextColor(0xFFCBD5E1);
-        mUpdateBtn.setBackgroundColor(0xFF1E293B);
-        mUpdateBtn.setOnClickListener(v -> checkUpdate());
-        root.addView(mUpdateBtn, lp(pad, dp(4), pad, dp(14)));
-
-        // 诊断
-        mDiag = new TextView(this);
-        mDiag.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
-        mDiag.setTextColor(0xFF6B7280);
-        mDiag.setLineSpacing(dp(3), 1f);
-        mDiag.setText("读取中…");
-        root.addView(mDiag, lp(pad, dp(8), pad, dp(12)));
-
-        // 日志标题（点击展开/收起）
-        mLogToggle = new TextView(this);
-        mLogToggle.setText("▸ 操作日志");
-        mLogToggle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
-        mLogToggle.setTextColor(0xFF8B94A3);
-        mLogToggle.setPadding(dp(4), dp(8), dp(4), dp(8));
-        mLogToggle.setOnClickListener(v -> toggleLog());
-        root.addView(mLogToggle, lp(pad, dp(4), pad, 0));
-
-        // 日志正文
-        mLogView = new TextView(this);
-        mLogView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
-        mLogView.setTextColor(0xFF7DD3FC);
-        mLogView.setTypeface(Typeface.MONOSPACE);
-        mLogView.setLineSpacing(dp(2), 1f);
-        mLogView.setTextIsSelectable(true);
-        mLogView.setBackgroundColor(0xFF111827);
-        int lpad = dp(10);
-        mLogView.setPadding(lpad, lpad, lpad, lpad);
-        mLogView.setText("等待日志…");
-        mLogView.setVisibility(View.GONE);   // 默认收起
-        root.addView(mLogView, lp(pad, 0, pad, dp(16)));
-
-        scroll.addView(root, new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        setContentView(scroll);
-
-        applyInsets(scroll);
+        LinearLayout shell = column();
+        shell.setBackgroundColor(WatchUi.BG);
+        shell.addView(buildHeader());
+        FrameLayout pageHost = new FrameLayout(this);
+        shell.addView(pageHost, new LinearLayout.LayoutParams(-1, 0, 1f));
+        for (int i = 0; i < mPages.length; i++) {
+            mPages[i] = new ScrollView(this);
+            mPages[i].setFillViewport(true);
+            mPages[i].setClipToPadding(false);
+            mPages[i].setVerticalScrollBarEnabled(false);
+            mPages[i].setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+            pageHost.addView(mPages[i], new FrameLayout.LayoutParams(-1, -1));
+        }
+        buildOverview(pageRoot(0));
+        buildSettings(pageRoot(1));
+        buildTools(pageRoot(2));
+        shell.addView(buildNavigation());
+        setContentView(shell);
+        applyInsets(shell);
+        selectPage(savedInstanceState == null ? 0 : savedInstanceState.getInt("ui.page", 0));
         StateStore.logLocal(this, "UI.onCreate 界面启动");
-        tick();
+        // 数据刷新由 onResume 启动，避免创建和恢复时各开启一条刷新链。
     }
 
-    // ------------------------------------------------------------ UI 构建
+    // ------------------------------------------------------------ 界面构建
 
-    private LinearLayout card(String name, TextView value, TextView sub) {
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setBackgroundColor(0xFF1A1D24);
-        int p = dp(10);
-        box.setPadding(p, p, p, p);
+    private LinearLayout column() {
+        LinearLayout v = new LinearLayout(this);
+        v.setOrientation(LinearLayout.VERTICAL);
+        return v;
+    }
 
-        TextView label = new TextView(this);
-        label.setText(name);
-        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        label.setTextColor(0xFF8B94A3);
-        box.addView(label);
+    private LinearLayout row() {
+        LinearLayout v = new LinearLayout(this);
+        v.setOrientation(LinearLayout.HORIZONTAL);
+        v.setGravity(Gravity.CENTER_VERTICAL);
+        return v;
+    }
 
+    private TextView text(String value, int sp, int color, boolean medium) {
+        TextView t = new TextView(this);
+        t.setText(value);
+        t.setTextColor(color);
+        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+        t.setIncludeFontPadding(false);
+        if (medium) t.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        return t;
+    }
+
+    private LinearLayout buildHeader() {
+        LinearLayout header = row();
+        header.setPadding(dp(22), dp(12), dp(22), dp(12));
+        View logo = WatchUi.icon(this, "watch", WatchUi.ACCENT, 30);
+        header.addView(logo, new LinearLayout.LayoutParams(dp(30), dp(30)));
+        TextView name = text("WatchTap", 20, WatchUi.TEXT, true);
+        LinearLayout.LayoutParams np = new LinearLayout.LayoutParams(0, -2, 1);
+        np.setMarginStart(dp(10));
+        header.addView(name, np);
+        TextView badge = text("手表 · 手机联动", 10, WatchUi.ACCENT, true);
+        badge.setPadding(dp(10), dp(7), dp(10), dp(7));
+        badge.setBackground(WatchUi.surface(this, WatchUi.ACCENT_DARK, 20, 0));
+        header.addView(badge);
+        return header;
+    }
+
+    private LinearLayout pageRoot(int index) {
+        // 大屏使用居中内容栏；窄屏可自然换行，不固定卡片高度。
+        FrameLayout center = new FrameLayout(this);
+        LinearLayout root = column();
+        int widthDp = (int) (getResources().getDisplayMetrics().widthPixels / mDp);
+        int width = widthDp > 640 ? dp(640) : ViewGroup.LayoutParams.MATCH_PARENT;
+        FrameLayout.LayoutParams p = new FrameLayout.LayoutParams(width, -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        root.setPadding(dp(22), dp(12), dp(22), dp(26));
+        center.addView(root, p);
+        mPages[index].addView(center, new ScrollView.LayoutParams(-1, -2));
+        return root;
+    }
+
+    private void heading(LinearLayout root, String title, String sub) {
+        root.addView(text(title, 28, WatchUi.TEXT, true), lp(0, 0, 0, dp(8)));
+        TextView note = text(sub, 13, WatchUi.SECONDARY, false);
+        note.setLineSpacing(dp(3), 1f);
+        root.addView(note, lp(0, 0, 0, dp(24)));
+    }
+
+    private void section(LinearLayout root, String title, String caption) {
+        LinearLayout line = row();
+        line.setPadding(dp(2), 0, dp(2), 0);
+        line.addView(text(title, 15, WatchUi.TEXT, true), new LinearLayout.LayoutParams(0, -2, 1));
+        if (caption != null && !caption.isEmpty()) line.addView(text(caption, 11, WatchUi.MUTED, false));
+        root.addView(line, lp(0, dp(22), 0, dp(12)));
+    }
+
+    private LinearLayout panel(int color) {
+        LinearLayout card = column();
+        card.setPadding(dp(18), dp(18), dp(18), dp(18));
+        card.setBackground(WatchUi.surface(this, color, 22, WatchUi.BORDER));
+        return card;
+    }
+
+    private void panelLabel(LinearLayout panel, String icon, String title, int color) {
+        LinearLayout label = row();
+        label.addView(WatchUi.icon(this, icon, color, 20), new LinearLayout.LayoutParams(dp(20), dp(20)));
+        TextView t = text(title, 13, WatchUi.SECONDARY, true);
+        LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(-2, -2);
+        tp.setMarginStart(dp(9));
+        label.addView(t, tp);
+        panel.addView(label, lp(0, 0, 0, dp(16)));
+    }
+
+    private void statusValue(LinearLayout box, TextView value, TextView sub, int size) {
         value.setText("--");
-        value.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
-        value.setTextColor(Color.WHITE);
-        value.setTypeface(Typeface.DEFAULT_BOLD);
-        box.addView(value);
-
-        sub.setText("等待数据");
-        sub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
-        sub.setTextColor(0xFF6B7280);
+        value.setTextSize(TypedValue.COMPLEX_UNIT_SP, size);
+        value.setTextColor(WatchUi.TEXT);
+        value.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        value.setIncludeFontPadding(false);
+        box.addView(value, lp(0, 0, 0, dp(8)));
+        sub.setText("等待手表上报");
+        sub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        sub.setTextColor(WatchUi.MUTED);
+        sub.setLineSpacing(dp(3), 1f);
+        sub.setIncludeFontPadding(false);
         box.addView(sub);
+    }
 
-        LinearLayout wrap = new LinearLayout(this);
-        wrap.setOrientation(LinearLayout.VERTICAL);
-        int pad = dp(16);
-        wrap.setPadding(pad, dp(3), pad, dp(3));
-        wrap.addView(box, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        return wrap;
+    private Button action(String title, boolean primary, View.OnClickListener click) {
+        Button b = new Button(this);
+        b.setText(title);
+        WatchUi.button(b, primary);
+        b.setOnClickListener(click);
+        return b;
+    }
+
+    private void buildOverview(LinearLayout root) {
+        heading(root, "状态总览", "睡眠、勿扰与心率，查看最近一次上报。");
+        mPermBar = text("需要勿扰权限\n点此授权，让睡眠联动正常工作  →", 13, WatchUi.AMBER, true);
+        mPermBar.setPadding(dp(16), dp(14), dp(16), dp(14));
+        mPermBar.setLineSpacing(dp(5), 1f);
+        mPermBar.setBackground(WatchUi.ripple(this, 0xFF30291D, 16, 0xFF584731));
+        mPermBar.setOnClickListener(v -> openDndSettings());
+        mPermBar.setVisibility(View.GONE);
+        root.addView(mPermBar, lp(0, 0, 0, dp(14)));
+
+        LinearLayout sleepMode = panel(0xFF152720);
+        panelLabel(sleepMode, "moon", "手表睡眠模式", WatchUi.ACCENT);
+        mSleepModeValue = new TextView(this);
+        mSleepModeSub = new TextView(this);
+        statusValue(sleepMode, mSleepModeValue, mSleepModeSub, 34);
+        root.addView(sleepMode, lp(0, 0, 0, dp(12)));
+
+        LinearLayout dnd = panel(WatchUi.SURFACE);
+        panelLabel(dnd, "bell", "手机勿扰", WatchUi.BLUE);
+        mDndValue = new TextView(this);
+        mDndSub = new TextView(this);
+        statusValue(dnd, mDndValue, mDndSub, 24);
+        LinearLayout physiology = panel(WatchUi.SURFACE);
+        panelLabel(physiology, "moon", "生理睡眠", WatchUi.VIOLET);
+        mSleepValue = new TextView(this);
+        mSleepSub = new TextView(this);
+        statusValue(physiology, mSleepValue, mSleepSub, 24);
+        boolean compact = getResources().getConfiguration().screenWidthDp >= 360
+                && getResources().getConfiguration().fontScale <= 1.25f;
+        if (compact) {
+            LinearLayout pair = row();
+            pair.setGravity(Gravity.TOP);
+            LinearLayout.LayoutParams a = new LinearLayout.LayoutParams(0, -1, 1);
+            a.setMarginEnd(dp(6));
+            pair.addView(dnd, a);
+            LinearLayout.LayoutParams b = new LinearLayout.LayoutParams(0, -1, 1);
+            b.setMarginStart(dp(6));
+            pair.addView(physiology, b);
+            root.addView(pair);
+        } else {
+            root.addView(dnd, lp(0, 0, 0, dp(12)));
+            root.addView(physiology);
+        }
+        mDndBtn = action("切换手机勿扰", false, v -> toggleDnd());
+        root.addView(mDndBtn, lp(0, dp(12), 0, 0));
+
+        section(root, "健康数据", "收到上报后更新");
+        LinearLayout heart = panel(WatchUi.SURFACE);
+        panelLabel(heart, "heart", "手表心率", WatchUi.ROSE);
+        mHrValue = new TextView(this);
+        mHrSub = new TextView(this);
+        mHrUpdated = text("上次更新 · 暂无", 12, WatchUi.MUTED, false);
+        statusValue(heart, mHrValue, mHrSub, 30);
+        heart.addView(mHrUpdated, lp(0, dp(8), 0, 0));
+        mHrBtn = action("上报一次", true, v -> doFetchHeartRate());
+        heart.addView(mHrBtn, lp(0, dp(20), 0, 0));
+        root.addView(heart);
+        TextView note = text("生理睡眠与心率均来自手表上报。没有新数据时，保留最近记录。", 12, WatchUi.MUTED, false);
+        note.setLineSpacing(dp(4), 1f);
+        root.addView(note, lp(dp(4), dp(14), dp(4), 0));
+    }
+
+    private void divider(LinearLayout box) {
+        View line = new View(this);
+        line.setBackgroundColor(WatchUi.BORDER);
+        box.addView(line, new LinearLayout.LayoutParams(-1, dp(1)));
+    }
+
+    private void buildSettings(LinearLayout root) {
+        heading(root, "联动设置", "让手表与手机，按你的习惯配合。");
+        LinearLayout daily = panel(WatchUi.SURFACE);
+        daily.setPadding(dp(16), dp(2), dp(16), dp(2));
+        mAlarmSyncSwitch = makeSwitch(false, this::saveAlarmSyncPref);
+        daily.addView(switchRow("sync", "手机闹钟同步", "手机响铃时提醒手表；关闭与推迟同步到手机，推迟固定 5 分钟。", mAlarmSyncSwitch));
+        divider(daily);
+        mMuteSwitch = makeSwitch(false, this::saveMutePref);
+        daily.addView(switchRow("bell", "同步静音", "开启勿扰时静音全部通知；关闭后保留优先通知。", mMuteSwitch));
+        divider(daily);
+        mNotifySwitch = makeSwitch(false, this::saveNotifyPref);
+        daily.addView(switchRow("arrow", "通知其他应用", "睡眠模式变化时发送安静通知，供 Tasker 等自动化读取。", mNotifySwitch));
+        root.addView(daily);
+
+        section(root, "采集与分析", "按需开启");
+        LinearLayout capture = panel(WatchUi.SURFACE);
+        capture.setPadding(dp(16), dp(2), dp(16), dp(2));
+        mCaptureSwitch = makeSwitch(false, this::saveCapturePref);
+        capture.addView(switchRow("code", "报文采集", "记录原始报文供离线分析，文件持续保留，不会自动删除。", mCaptureSwitch));
+        root.addView(capture);
+        TextView tip = text("采集仅供调试分析。完成后可关闭开关，已保存的数据会保留。", 12, WatchUi.MUTED, false);
+        tip.setLineSpacing(dp(4), 1f);
+        root.addView(tip, lp(dp(4), dp(14), dp(4), 0));
+    }
+
+    private void buildTools(LinearLayout root) {
+        heading(root, "工具与诊断", "版本、兼容性与运行记录，都在这里。");
+        LinearLayout support = panel(WatchUi.SURFACE);
+        panelLabel(support, "shield", "兼容与修复", WatchUi.ACCENT);
+        support.addView(text("OPPO 健康", 20, WatchUi.TEXT, true));
+        support.addView(text("6.11.7 / 6.10.15", 13, WatchUi.SECONDARY, false), lp(0, dp(6), 0, dp(14)));
+        TextView fix = text("找不到「睡眠模式联动手机免打扰」？修复后会重启 OPPO 健康，再到它的设置里开启联动。", 12, WatchUi.SECONDARY, false);
+        fix.setLineSpacing(dp(4), 1f);
+        support.addView(fix);
+        mFixBtn = action("修复联动开关显示", false, v -> doFixSwitch());
+        support.addView(mFixBtn, lp(0, dp(16), 0, 0));
+        mFixStatus = text("", 12, WatchUi.ACCENT, false);
+        mFixStatus.setLineSpacing(dp(4), 1f);
+        mFixStatus.setVisibility(View.GONE);
+        support.addView(mFixStatus, lp(0, dp(12), 0, 0));
+        root.addView(support);
+
+        section(root, "运行维护", "");
+        LinearLayout maintenance = panel(WatchUi.SURFACE);
+        maintenance.addView(action("刷新状态", false, v -> {
+            StateStore.logLocal(this, "UI.refresh 手动刷新");
+            refresh();
+        }), lp(0, 0, 0, dp(10)));
+        maintenance.addView(action("诊断勿扰写入", false, v -> runProbe()));
+        TextView caution = text("诊断会测试勿扰写入路径，期间可能短暂切换勿扰状态。", 12, WatchUi.MUTED, false);
+        caution.setLineSpacing(dp(4), 1f);
+        maintenance.addView(caution, lp(0, dp(10), 0, dp(16)));
+        divider(maintenance);
+        mDetailsToggle = text("运行详情    ＋", 14, WatchUi.SECONDARY, true);
+        mDetailsToggle.setGravity(Gravity.CENTER_VERTICAL);
+        mDetailsToggle.setMinHeight(dp(48));
+        mDetailsToggle.setBackground(WatchUi.ripple(this, Color.TRANSPARENT, 10, 0));
+        mDetailsToggle.setOnClickListener(v -> {
+            boolean open = mDetails.getVisibility() != View.VISIBLE;
+            mDetails.setVisibility(open ? View.VISIBLE : View.GONE);
+            mDetailsToggle.setText(open ? "运行详情    －" : "运行详情    ＋");
+        });
+        maintenance.addView(mDetailsToggle, lp(0, dp(6), 0, 0));
+        mDetails = column();
+        mDiag = text("读取中…", 12, WatchUi.MUTED, false);
+        mDiag.setLineSpacing(dp(5), 1f);
+        mDiag.setTextIsSelectable(true);
+        mDetails.addView(mDiag);
+        mDetails.setVisibility(View.GONE);
+        maintenance.addView(mDetails, lp(0, dp(4), 0, dp(6)));
+        root.addView(maintenance);
+
+        section(root, "操作日志", "");
+        LinearLayout logs = panel(WatchUi.SURFACE);
+        logs.setPadding(dp(16), dp(4), dp(16), dp(4));
+        mLogToggle = text("展开操作日志    ＋", 14, WatchUi.SECONDARY, true);
+        mLogToggle.setGravity(Gravity.CENTER_VERTICAL);
+        mLogToggle.setMinHeight(dp(48));
+        mLogToggle.setBackground(WatchUi.ripple(this, Color.TRANSPARENT, 10, 0));
+        mLogToggle.setOnClickListener(v -> toggleLog());
+        logs.addView(mLogToggle);
+        mLogView = text("等待日志…", 11, WatchUi.SECONDARY, false);
+        mLogView.setTypeface(Typeface.MONOSPACE);
+        mLogView.setLineSpacing(dp(3), 1f);
+        mLogView.setTextIsSelectable(true);
+        mLogView.setPadding(dp(12), dp(12), dp(12), dp(12));
+        mLogView.setBackground(WatchUi.surface(this, WatchUi.BG, 12, 0));
+        mLogView.setVisibility(View.GONE);
+        logs.addView(mLogView, lp(0, 0, 0, dp(12)));
+        root.addView(logs);
+
+        mUpdateBtn = action("检查更新", false, v -> checkUpdate());
+        root.addView(mUpdateBtn, lp(0, dp(24), 0, dp(12)));
+        TextView version = text("WatchTap  ·  " + versionName(), 12, WatchUi.MUTED, false);
+        version.setGravity(Gravity.CENTER);
+        root.addView(version);
+    }
+
+    private String versionName() {
+        try { return getPackageManager().getPackageInfo(getPackageName(), 0).versionName; }
+        catch (Throwable ignored) { return ""; }
     }
 
     /** 布尔回调，避免 lambda 参数类型推断问题。 */
-    private interface OnBool {
-        void on(boolean value);
-    }
+    private interface OnBool { void on(boolean value); }
 
-    /** 造一个紧凑的 Switch。 */
     private android.widget.Switch makeSwitch(boolean checked, OnBool cb) {
         android.widget.Switch sw = new android.widget.Switch(this);
+        sw.setId(View.generateViewId());
+        sw.setShowText(false);
         sw.setChecked(checked);
-        sw.setOnCheckedChangeListener((btn, value) -> cb.on(value));
-        sw.setMinHeight(0);
-        sw.setMinimumHeight(0);
+        sw.setMinHeight(dp(48));
+        sw.setMinimumWidth(dp(48));
+        sw.setSplitTrack(false);
+        int[][] states = {{android.R.attr.state_checked}, {}};
+        sw.setThumbTintList(new android.content.res.ColorStateList(states,
+                new int[]{WatchUi.ACCENT, WatchUi.SECONDARY}));
+        sw.setTrackTintList(new android.content.res.ColorStateList(states,
+                new int[]{0xFF31594F, 0xFF3C4B59}));
+        sw.setOnCheckedChangeListener((btn, value) -> { if (!mBindingUi) cb.on(value); });
         return sw;
     }
 
-    /** 一行：左边标题+说明，右边开关。 */
-    private LinearLayout switchRow(String title, String desc, View control) {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        row.setBackgroundColor(0xFF1A1D24);
-        int p = dp(10);
-        row.setPadding(p, p, p, p);
+    private void bindSwitch(android.widget.Switch sw, boolean checked) {
+        if (sw == null || sw.isChecked() == checked) return;
+        mBindingUi = true;
+        try { sw.setChecked(checked); }
+        finally { mBindingUi = false; }
+    }
 
-        LinearLayout texts = new LinearLayout(this);
-        texts.setOrientation(LinearLayout.VERTICAL);
+    private LinearLayout switchRow(String icon, String title, String desc, android.widget.Switch control) {
+        LinearLayout line = row();
+        line.setPadding(0, dp(16), 0, dp(16));
+        line.setMinimumHeight(dp(92));
+        line.addView(WatchUi.icon(this, icon, WatchUi.ACCENT, 22), new LinearLayout.LayoutParams(dp(22), dp(22)));
+        LinearLayout labels = column();
+        TextView label = text(title, 15, WatchUi.TEXT, true);
+        label.setId(View.generateViewId());
+        label.setLabelFor(control.getId());
+        labels.addView(label, lp(0, 0, 0, dp(5)));
+        TextView note = text(desc, 12, WatchUi.MUTED, false);
+        note.setLineSpacing(dp(3), 1f);
+        labels.addView(note);
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, -2, 1);
+        p.setMarginStart(dp(12));
+        p.setMarginEnd(dp(12));
+        line.addView(labels, p);
+        control.setContentDescription(title);
+        line.addView(control, new LinearLayout.LayoutParams(-2, dp(48)));
+        line.setBackground(WatchUi.ripple(this, Color.TRANSPARENT, 12, 0));
+        line.setOnClickListener(v -> control.setChecked(!control.isChecked()));
+        return line;
+    }
 
-        TextView t = new TextView(this);
-        t.setText(title);
-        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        t.setTextColor(Color.WHITE);
+    private LinearLayout buildNavigation() {
+        LinearLayout navigation = row();
+        navigation.setPadding(dp(14), dp(10), dp(14), dp(10));
+        navigation.setBackground(WatchUi.surface(this, WatchUi.BG, 0, 0));
+        String[] titles = {"总览", "联动", "工具"};
+        for (int i = 0; i < titles.length; i++) {
+            final int index = i;
+            LinearLayout item = column();
+            item.setGravity(Gravity.CENTER);
+            item.setPadding(dp(8), dp(8), dp(8), dp(8));
+            item.setMinimumHeight(dp(56));
+            item.setContentDescription(titles[i]);
+            item.setOnClickListener(v -> selectPage(index));
+            item.setFocusable(true);
+            TextView label = text(titles[i], 11, WatchUi.MUTED, true);
+            mNavItems[i] = item;
+            mNavLabels[i] = label;
+            LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, -2, 1);
+            p.setMargins(dp(4), 0, dp(4), 0);
+            navigation.addView(item, p);
+        }
+        return navigation;
+    }
 
-        TextView d = new TextView(this);
-        d.setText(desc);
-        d.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
-        d.setTextColor(0xFF6B7280);
+    private void selectPage(int page) {
+        mSelectedPage = Math.max(0, Math.min(2, page));
+        String[] icons = {"watch", "settings", "tools"};
+        for (int i = 0; i < mPages.length; i++) {
+            boolean selected = i == mSelectedPage;
+            mPages[i].setVisibility(selected ? View.VISIBLE : View.GONE);
+            LinearLayout nav = mNavItems[i];
+            nav.removeAllViews();
+            nav.addView(WatchUi.icon(this, icons[i], selected ? WatchUi.ACCENT : WatchUi.MUTED, 22),
+                    new LinearLayout.LayoutParams(dp(22), dp(22)));
+            mNavLabels[i].setTextColor(selected ? WatchUi.ACCENT : WatchUi.MUTED);
+            LinearLayout.LayoutParams label = new LinearLayout.LayoutParams(-2, -2);
+            label.topMargin = dp(5);
+            nav.addView(mNavLabels[i], label);
+            nav.setSelected(selected);
+            nav.setBackground(WatchUi.ripple(this, selected ? WatchUi.ACCENT_DARK : Color.TRANSPARENT, 18, 0));
+        }
+    }
 
-        texts.addView(t);
-        texts.addView(d);
-
-        row.addView(texts, new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        if (control != null) row.addView(control);
-
-        LinearLayout wrap = new LinearLayout(this);
-        wrap.setOrientation(LinearLayout.VERTICAL);
-        int wp = dp(16);
-        wrap.setPadding(wp, dp(2), wp, dp(2));
-        wrap.addView(row, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        return wrap;
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        outState.putInt("ui.page", mSelectedPage);
+        super.onSaveInstanceState(outState);
     }
 
     /** 检查 GitHub 更新。 */
@@ -408,14 +521,14 @@ public class MainActivity extends Activity {
         TextView tv = new TextView(this);
         tv.setText(msg);
         tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
-        tv.setTextColor(0xFFE5E7EB);
+        tv.setTextColor(WatchUi.TEXT);
         tv.setTextIsSelectable(true);
         int p = dp(14);
         tv.setPadding(p, p, p, p);
 
         ScrollView sv = new ScrollView(this);
         sv.addView(tv);
-        sv.setBackgroundColor(0xFF111827);
+        sv.setBackgroundColor(WatchUi.SURFACE);
 
         android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(this)
                 .setTitle("发现新版本 " + r.latestTag)
@@ -445,7 +558,7 @@ public class MainActivity extends Activity {
     private void toggleLog() {
         mLogExpanded = !mLogExpanded;
         mLogView.setVisibility(mLogExpanded ? View.VISIBLE : View.GONE);
-        mLogToggle.setText(mLogExpanded ? "▾ 操作日志" : "▸ 操作日志");
+        mLogToggle.setText(mLogExpanded ? "收起操作日志    －" : "展开操作日志    ＋");
     }
 
     private LinearLayout.LayoutParams lp(int l, int t, int r, int btm) {
@@ -501,34 +614,34 @@ public class MainActivity extends Activity {
         // ---- 手表睡眠模式 ----
         if (sm == 1) {
             mSleepModeValue.setText("已开启");
-            mSleepModeValue.setTextColor(0xFF60A5FA);
+            mSleepModeValue.setTextColor(WatchUi.ACCENT);
         } else if (sm == 0) {
             mSleepModeValue.setText("已关闭");
-            mSleepModeValue.setTextColor(0xFF9CA3AF);
+            mSleepModeValue.setTextColor(WatchUi.SECONDARY);
         } else {
             mSleepModeValue.setText("未收到");
-            mSleepModeValue.setTextColor(0xFF9CA3AF);
+            mSleepModeValue.setTextColor(WatchUi.SECONDARY);
         }
         // 明确区分「当前」和「上次记录」
         if (sm >= 0 && smAt > 0) {
             String when = ago(smAt);
             boolean stale = System.currentTimeMillis() - smAt > 5 * 60 * 1000;
             mSleepModeSub.setText((stale ? "上次记录：" : "更新：") + when);
-            mSleepModeSub.setTextColor(stale ? 0xFFF59E0B : 0xFF6B7280);
+            mSleepModeSub.setTextColor(stale ? WatchUi.AMBER : WatchUi.MUTED);
         } else {
             mSleepModeSub.setText("等待手表上报");
-            mSleepModeSub.setTextColor(0xFF6B7280);
+            mSleepModeSub.setTextColor(WatchUi.MUTED);
         }
 
         // ---- 勿扰 ----
         if (zen == 0) {
             mDndValue.setText("已关闭");
-            mDndValue.setTextColor(0xFF9CA3AF);
+            mDndValue.setTextColor(WatchUi.SECONDARY);
             mDndSub.setText("通知正常接收");
         } else if (zen > 0) {
             // zen: 1=仅优先 2=完全静音 3=仅闹钟，都算「已开启」
             mDndValue.setText("已开启");
-            mDndValue.setTextColor(0xFFF59E0B);
+            mDndValue.setTextColor(WatchUi.AMBER);
             String mode = zen == 1 ? "仅优先通知"
                     : zen == 2 ? "完全静音"
                     : zen == 3 ? "仅闹钟"
@@ -542,41 +655,30 @@ public class MainActivity extends Activity {
         // ---- 生理睡眠 ----
         if (sl == 1) {
             mSleepValue.setText("睡眠中");
-            mSleepValue.setTextColor(0xFF818CF8);
+            mSleepValue.setTextColor(WatchUi.VIOLET);
         } else if (sl == 0) {
             mSleepValue.setText("清醒");
-            mSleepValue.setTextColor(0xFF9CA3AF);
+            mSleepValue.setTextColor(WatchUi.SECONDARY);
         } else {
             mSleepValue.setText("--");
-            mSleepValue.setTextColor(0xFF9CA3AF);
+            mSleepValue.setTextColor(WatchUi.SECONDARY);
         }
         mSleepSub.setText(sl >= 0 ? ago(slTs) : "等待上报");
 
-        // ---- 同步静音开关 ----
+        // 显示偏好时不触发用户操作回调；原有 provider 回填保持不变。
         boolean mute = Prefs.getBool(this, Prefs.K_MUTE, false);
-        if (mMuteSwitch.isChecked() != mute) {
-            mMuteSwitch.setOnCheckedChangeListener(null);
-            mMuteSwitch.setChecked(mute);
-            mMuteSwitch.setOnCheckedChangeListener((btn, checked) -> saveMutePref(checked));
-        }
-
-        // ---- 通知开关 ----
         boolean notify = Prefs.getBool(this, Prefs.K_NOTIFY, false);
         boolean alarmSync = Prefs.getBool(this, Prefs.K_ALARM_SYNC, true);
-        if (mAlarmSyncSwitch != null) mAlarmSyncSwitch.setChecked(alarmSync);
         boolean cap = Prefs.getBool(this, Prefs.K_CAPTURE, false);
-        if (mCaptureSwitch != null) mCaptureSwitch.setChecked(cap);
+        bindSwitch(mMuteSwitch, mute);
+        bindSwitch(mNotifySwitch, notify);
+        bindSwitch(mAlarmSyncSwitch, alarmSync);
+        bindSwitch(mCaptureSwitch, cap);
         ProviderPrefs.setBoolean(this, Prefs.K_CAPTURE, cap);
-
-        // 把开关值回填给 provider（hook 进程靠它读取，跨 uid 读文件不可靠）
         ProviderPrefs.setBoolean(this, Prefs.K_NOTIFY, notify);
         ProviderPrefs.setBoolean(this, Prefs.K_MUTE, mute);
         ProviderPrefs.setBoolean(this, Prefs.K_ALARM_SYNC, alarmSync);
-        if (mNotifySwitch.isChecked() != notify) {
-            mNotifySwitch.setOnCheckedChangeListener(null);
-            mNotifySwitch.setChecked(notify);
-            mNotifySwitch.setOnCheckedChangeListener((btn, checked) -> saveNotifyPref(checked));
-        }
+        mDndBtn.setText(zen > 0 ? "关闭手机勿扰" : "开启手机勿扰");
 
         // ---- 权限条 ----
         mPermBar.setVisibility(access ? View.GONE : View.VISIBLE);
@@ -686,14 +788,14 @@ public class MainActivity extends Activity {
             tv.setText(report);
             tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
             tv.setTypeface(Typeface.MONOSPACE);
-            tv.setTextColor(0xFFE5E7EB);
+            tv.setTextColor(WatchUi.TEXT);
             tv.setTextIsSelectable(true);
             int pp = dp(16);
             tv.setPadding(pp, pp, pp, pp);
 
             ScrollView sv = new ScrollView(this);
             sv.addView(tv);
-            sv.setBackgroundColor(0xFF111827);
+            sv.setBackgroundColor(WatchUi.SURFACE);
 
             new android.app.AlertDialog.Builder(this)
                     .setTitle("勿扰写入诊断")
@@ -839,7 +941,15 @@ public class MainActivity extends Activity {
             toast("发送请求失败：" + t);
         }
         mHrBtn.setEnabled(false);
-        mHrBtn.postDelayed(() -> { if (mHrBtn != null) mHrBtn.setEnabled(true); }, 6000);
+        mHrBtn.setAlpha(0.6f);
+        mHrBtn.setText("等待回传…");
+        mHrBtn.postDelayed(() -> {
+            if (mHrBtn != null) {
+                mHrBtn.setEnabled(true);
+                mHrBtn.setAlpha(1f);
+                mHrBtn.setText("上报一次");
+            }
+        }, 6000);
     }
 
     /** hook 进程回报的结果。 */
@@ -878,7 +988,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** 刷新心率卡片（数据来自 provider，跨进程共享）。 */
+    /** 刷新心率卡片：展示最近一次广播缓存，不在刷新时发起请求。 */
     private void refreshHeartRate() {
         if (mHrValue == null) return;
         int bpm = mHrBpm, min = mHrMin, max = mHrMax, cnt = mHrCount;
@@ -886,21 +996,21 @@ public class MainActivity extends Activity {
         String msg = mHrMsg;
 
         if (bpm < 0) {
-            mHrValue.setText(msg == null || msg.isEmpty() ? "还没有数据" : msg);
-            mHrValue.setTextColor(0xFFE5E7EB);
-            mHrSub.setText("点下面按钮拉取一次");
-            mHrUpdated.setText("");
+            mHrValue.setText("-- bpm");
+            mHrValue.setTextColor(WatchUi.SECONDARY);
+            mHrSub.setText(msg == null || msg.isEmpty() ? "还没有心率数据，点击按钮上报一次" : msg);
+            mHrUpdated.setText("上次更新 · 暂无");
             return;
         }
 
         long now = System.currentTimeMillis() / 1000L;
         boolean fresh = ts > 0 && now - ts < 300;
-        mHrValue.setText(bpm + " bpm  ·  " + cnt + " 点");
-        mHrValue.setTextColor(fresh ? 0xFF34D399 : 0xFFE5E7EB);
-        mHrSub.setText("范围 " + min + "~" + max + " bpm");
+        mHrValue.setText(bpm + " bpm");
+        mHrValue.setTextColor(fresh ? WatchUi.ACCENT : WatchUi.TEXT);
+        mHrSub.setText("范围 " + min + "–" + max + " bpm  ·  " + cnt + " 个数据点");
         mHrUpdated.setText("更新于 " + agoText(ts) + "（" + hhmm(ts) + "）");
-        mHrUpdated.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
-        mHrUpdated.setTextColor(0xFF6B7280);
+        mHrUpdated.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        mHrUpdated.setTextColor(WatchUi.MUTED);
     }
 
     private String agoText(long sec) {
@@ -977,6 +1087,8 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         mRunning = true;
+        mHandler.removeCallbacksAndMessages(null);
+        registerHrReceiver();
         tick();
         ensureNotifyPermission();
     }
@@ -993,6 +1105,15 @@ public class MainActivity extends Activity {
             StateStore.logLocal(this, "申请通知权限");
         } catch (Throwable ignored) {
         }
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (mHrRxDone) {
+            try { unregisterReceiver(mHrResult); } catch (Throwable ignored) {}
+            mHrRxDone = false;
+        }
+        super.onDestroy();
     }
 
     @Override

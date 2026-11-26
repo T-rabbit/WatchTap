@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.WatchTap" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#7DE2C3</item>
+        <item name="android:windowBackground">#0B1117</item>
+        <item name="android:colorBackground">#0B1117</item>
+        <item name="android:colorPrimary">#141D27</item>
+        <item name="android:colorPrimaryDark">#0B1117</item>
+        <item name="android:statusBarColor">#0B1117</item>
+        <item name="android:navigationBarColor">#0B1117</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+</resources>

@@ -15,7 +15,7 @@
         android:icon="@android:drawable/ic_menu_recent_history"
         android:label="WatchTap"
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.Material.NoActionBar">
+        android:theme="@style/Theme.WatchTap">
 
         <activity
             android:name=".MainActivity"
